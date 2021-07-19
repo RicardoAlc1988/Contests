@@ -1,0 +1,1155 @@
+---
+title: "Examen minería datos II"
+author: "Ricardo Alcañiz Frutos"
+date: "09 de septiembre de 2019"
+output:
+  html_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Análisis gráfico y resumen de la información
+
+## 1.1. Carga de los datos y estadísticas generales
+
+Cargamos los datos y mostramos las primeras estadísticas básicas del dataset.
+
+```{r, warning=FALSE}
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(lda))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(doParallel))
+suppressPackageStartupMessages(library(dummies))
+suppressPackageStartupMessages(library(MASS))
+suppressPackageStartupMessages(library(Boruta))
+suppressPackageStartupMessages(library(sampling))
+suppressPackageStartupMessages(library(corrplot))
+suppressPackageStartupMessages(library(ROCR))
+suppressPackageStartupMessages(library(pROC))
+suppressPackageStartupMessages(library(e1071))
+suppressPackageStartupMessages(library(DMwR))
+suppressPackageStartupMessages(library(genalg))
+suppressPackageStartupMessages(library( bnclassify))
+suppressPackageStartupMessages(library(mboost))
+suppressPackageStartupMessages(library( caTools))
+suppressPackageStartupMessages(library( mboost))
+suppressPackageStartupMessages(library( xgboost))
+
+
+credit_fraud_data <- read.csv("C:/Users/ricar/OneDrive/Escritorio/Práctica Minería de Datos II/creditcard.csv")
+
+credit_fraud_data_dt <- as.data.table(credit_fraud_data)
+
+credit_fraud_data_dt$Class <- as.factor(credit_fraud_data_dt$Class)
+
+str(credit_fraud_data_dt)
+summary(credit_fraud_data_dt)
+dim(credit_fraud_data_dt)
+
+```
+
+
+## 1.2. Resúmen de la información y análisis gráfico por variable
+
+La siguiente función discretiza una variable continua dada como parámetro (variable), diviendo la variable en tantos intervalos como se especifique en el parámetro (n_intervalos), y realiza un resumen tanto a nivel numérico como gráfico de la influencia de cada intervalo de valores en la discrimización de la variable respuesta. Para ello se ha creado un dataset con una fila por cada fila del dataset credit_fraud_data_dt con lo siguientes campos:
+
+  -  interval: con el parámetro n_intervalos se fijan el número de intervalos de igual longitud en los que se divide la variable dada como parámetro. Pues bien, 'interval' denota, para cada valor de la variable, el extremo inferior del intervalo al que pertenece.
+  - Class: el valor de la variable respuesta (0,1)
+  - factor: variable descriptiva del factor. Se trata de una cadena formada por el valor de los extremo inferior y superior del intervalo, separada por una coma.
+
+Con estos datos construímos las siguientes totalizaciones:
+
+  - Por cada intervalo (variable factor), el número de casos de fraude
+  - Por cada intervalo, el número total  de casos
+  - Calcular el procentaje de casos de fraude entre el total por intervalo, creando una métrica normalizada que no de más valor a los casos mayoritarios
+  - Finalmente mostrar una tabla resumen y un gráfico ordenado por intervalo
+
+  
+Como apunte adicional, el argumento mediante el cual se deduce el intervalo al que pertenece un valor x concreto de una variable es el siguiente:
+
+  sean a y b los extremos de la partición y sea i el valor que cumpla a + (b-a)/n * i <= x < a + (b-a)/n * (i+1) (basta tomar i como el máximo del conjunto {i: a + (b-a)/n * i <= x}). Entonces, claramente i es el extremo inferior al que pertenece x. Con una manipulación sencilla se llega a la desigualdad i <= ((x-a)/(b-a)) * n < i+1. Esto es i es la parte entera de ((x-a)/(b-a)) * n.
+
+
+```{r, warning=FALSE}
+
+#Params: 
+# variable: nombre de la variable continua del dataset
+#n_intervalos: número de intervalos equiespaciados en los que discretizar la variable continua
+plot_influence_variable_in_fraud <- function(variable, n_intervalos) {
+  
+  #Creamos un dataset vacío
+  dt <- data.table()
+  cols <- c(variable)
+  #Acceso a la variable del dataset por nombre
+  dt[, value := credit_fraud_data_dt[, mget(cols)]]
+  # Calculamos el valor máximo y mínimo de la variable
+  a <- min(dt$value)
+  b <- max(dt$value)
+  # Calculamos el extremo inferior del intervalo al que pertenece el valor
+  dt[, interval := floor(((dt$value-a) / (b-a)) * n_intervalos)]
+  # Añadimos la clase del dataset original
+  dt[, class := credit_fraud_data_dt[, mget(c("Class"))]]
+  # Calculamos el factor
+  dt[, factor := paste( round(a + ( ((b-a) / n_intervalos) * dt$interval), 2), round(a + ( ((b-a) / n_intervalos) * (dt$interval + 1)), 2),   sep=",")]
+
+ # Cálculos con la información resumida por factores y muestra de los datos (tablas y gráficas)
+ fraud_yes <- dt[, . (cnt = .N), by = list(factor, class, interval)][class == 1]
+ cnt_by_class <- dt[, .(cnt = .N), by = list(factor, interval)]
+ fraud_resume <- fraud_yes[cnt_by_class, on="factor", nomatch=0][, .(factor, cnt, i.cnt, interval)]
+ fraud_resume$porcentaje <- fraud_resume$cnt / fraud_resume$i.cnt
+ #fraud_resume <- fraud_resume[order(interval)]
+ names(fraud_resume) <- c("factor", "fraude_si", "total", "interval", "porcentaje")
+ print(paste("Tabla resumen para la vaiable ", variable))
+ print(fraud_resume[order(interval)][, .(factor, fraude_si, total, porcentaje)])
+ p <- ggplot(data=as.data.frame(fraud_resume), aes(x=reorder(factor, interval), y=porcentaje)) +
+      ggtitle(paste("Gráfico para la variable ", variable)) +
+      geom_bar(stat="identity", fill="#56B4E9") +
+      theme_minimal()
+ plot(p)
+}
+
+
+
+```
+
+Finalmente, invocamos la función para cada una de las variables y un número de diez intervalos. En caso de que algún intervalo no tenga casos de fraude no aparecerá (no sirve como factor discriminativo claramente).
+
+```{r, warning=FALSE}
+
+n_interval <- 10
+for(variable in c("Time", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11", "V12", "V13", "V14", "V15", "V16", "V17", "V18",
+                  "V19", "V20", "V21", "V22", "V23", "V24", "V25", "V26", "V27", "V28", "Amount")) {
+  plot_influence_variable_in_fraud(variable, n_interval)
+}
+
+```
+
+## 1.3. Estudio gráfico de la separabildiad de las variables
+
+
+A continuación, realizamos un estudio gráfico de la separabilidad lineal de las variables. Es decir, se estudia, desde un punto de vista intuitivo, si existe alguna transformación lineal capaz de establecer una separación en las clases. Primeramente, hacemos uso de la libreria caret para ver la separabilidad a través de las distintas componentes principales.
+
+```{r, warning=FALSE}
+
+
+featurePlot(x = credit_fraud_data_dt[, .(V1, V2, V3, V4, V5, V6, V7)], 
+            y = credit_fraud_data_dt$Class, 
+            plot = "pairs",
+            auto.key = list(columns = 3))
+
+```
+
+## 1.4. Estudio de la separabildiad mediante LDA
+
+
+Igualmente, probamos a realizar la separación mediante LDA a través de la representación gráfica de la distribución para cada clase.
+
+```{r, warning=FALSE}
+
+lda <- lda(Class ~ ., 
+           data=credit_fraud_data_dt)
+
+
+plot(lda, panel = panel.lda, cex = 0.7, dimen = 1, abbrev = FALSE, type ="histogram")
+
+```
+
+
+
+## 2. Preprocesado de los datos
+
+
+## 2.1. Estudio e imputación de los valores faltantes
+
+Como puede observarse, no existen valores faltantes, por lo que no es necesario llevar a cabo acción alguna.
+
+```{r, warning=FALSE}
+
+n_valores_faltantes <- nrow(na.omit(credit_fraud_data_dt, invert=TRUE))
+total_valores <- nrow(credit_fraud_data_dt)
+n_valores_faltantes
+
+```
+
+
+## 2.2. Transformación de las variables continuas sesgadas y normalización de variables
+
+Realizamos las operaciones básicas para normalizar variables y eliminar el sesgo de las mismas.
+
+```{r, warning=FALSE}
+
+normalization <- preProcess(credit_fraud_data_dt,method = c("BoxCox", "center", "scale"))
+credit_fraud_data_normalized_dt <- predict(normalization, credit_fraud_data_dt)
+
+
+```
+
+## 2.3. Eliminación de valores atípicos y predictores variablidad casi nula
+
+
+La definición de los valores atípicos y de los predictores de variabilidad casi nula no es puramente técnica, sino que debe complementarse con una compresión de las variables. Valores atípicos pueden denotar un error en los datos o circunstancias anormales, reales y perfectamente posibles de un proceso de negocio. Igualmente, predictores de variabilidad casi nula pueden indicar igualmente valores raros, pero reales y perfectamente válidos dentro del proceso de negocio. Por tanto, la decisión es no llevar a cabo ninguna de estas transformaciones sin tener las variables originales, ya que podríamos estar deteriorando e incluso anulando la capacidad predictiva de nuestro dataset.
+
+
+## 2.4. Selección de variables mediante algoritmos genéticos
+
+Se hará uso de la librería genalg de R para la selección de algoritmos genéticos junto con la librería rpart. Sin embargo, usaremos esta última de manera indirecta, usando la librería caret como interfaz, ya que es mucho más cómoda y general. Con el uso de genalg, la implementación de los algoritmos genéticos se reduce a configurar los parámetros del algoritmo y a la creación de la función de fitness. Comentamos los pasos seguidos para la creación de la misma:
+
+  - Transformación de la variable respueta 0-1 en una variable descriptiva yes-no, con el fin de que tenga compatibilidad con la librería rpart
+  - Creamos los conjuntos de entrenamiento y validación, que se usarán para el entrenamiento del algoritmo CART
+
+A continuación, se crea la función que será usada para medir el fitness de los individuos. Se describen los pasos implementados y las decisiones tomadas:
+
+  - La representación de las soluciones se hará mediante un vector de tantas entradas como variables tenga el dataset (sin contar la variable respuesta) y tendrá un uno en la posición i-ésima si y sólo si dicha variable es seleccionada. Este vector se suele denotar, y así lo hacemos nosotros también, como cromosoma
+  - Dado que se nos especifica explícitamente que seleccionemos siete variables, se le da un valor de cero a los cromosomas que tengan activos un número distinto de siete genes
+  - El siguiente paso, es añadir al cromosoma una gen extra, con el fin de añadir la variable respuesta para el entrenamiento del algoritmo
+  - Posteriormente, se seleccionan las variables indicadas en el cromosoma y se entrena un algoritmo CART, tal como se indica en las especificaciones del examen (por su rapidez)
+  -  Finalmente, se proporciona la métrica ROC con los datos de entrenamiento. Nótese que damos realmente el negativo de la curva ROC. El motivo es que los algoritmos genéticos, de forma estandar, están diseñados para resolver problemas de minimización. Pero éstos se pueden transformar a un problema de maximización, notando que max(f) = - min(-f). De ahí que devolvamos -f, en vez de f.
+
+
+```{r, warning=FALSE}
+
+# Construcción de la función de evaluación
+
+set.seed(123)
+
+# Transformación de la variable respuesta de numérica a string para algoritmo rpart
+credit_fraud_data_normalized_dt[, y := ifelse(Class == 1,"Yes","No")]
+credit_fraud_data_normalized_dt$y <- as.factor(credit_fraud_data_normalized_dt$y)
+credit_fraud_data_normalized_dt$Class <- NULL
+
+
+    
+fiveStats = function(...) c (twoClassSummary(...), defaultSummary(...))
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 5, classProbs = TRUE, summaryFunction = fiveStats)
+
+# Creamos el conjunto de datos de entrenamiento y test
+train.index <- createDataPartition(y = credit_fraud_data_normalized_dt$y, p= 0.8, list = FALSE)
+data.training <- credit_fraud_data_normalized_dt[train.index,]
+data.testing <- credit_fraud_data_normalized_dt[-train.index,]
+
+cartGrid <-  expand.grid(cp = (0:10)/100)
+
+#Params:
+#chromosome: vector de 0-1s indicando la presencia-ausencia de la varible
+fitt_function <- function(chromosome) {
+  
+  # Desechamos los conjuntos de variables que no tengan exactamente 7 variables
+  if(length(which(chromosome==1)) != 7) 
+    return(0)
+  
+  # Se añade la variable respuesta al dataset
+  selected_variables <- c(chromosome, 1)
+  
+  
+  # Seleccionamos las varibales con gen activo en el cromosoma
+  training_data <- data.training[, selected_variables==1, with=FALSE]
+  test_data <- data.testing[, selected_variables==1, with=FALSE]
+  
+   # Entrenamiento del algoritmo
+  clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+  CART_tree <- train(y ~., data = training_data, 
+                     method = "rpart",
+                     #parms = list(split = "information"),
+                     preProc = c("center", "scale"), 
+                     trControl = train.control,
+                     metric = "ROC",
+                     tuneGrid = cartGrid)
+  stopImplicitCluster()
+  
+  # Cálculo de la métrica ROC
+  roc_value <- auc(roc(test_data$y,predict(CART_tree, test_data, type="prob")[,"Yes"]))
+  
+  # Se devuelve el negativo de la curva ROC
+  return(-roc_value[1])
+
+}
+
+```
+
+A continuación, entrenamos el algoritmo con sólo quince etapas, habiendo tardado casi un total de veinticuatro horas en proporcionar la salida. Se muestran las variables seleccionadas por el algoritmo junto con la métrica ROC obtenida y se crea un nuevo dataset con las variables seleccionadas.
+
+
+```{r, warning=FALSE}
+
+
+#iter <- 15
+#selected_variables <- rbga.bin(size = 30, popSize = 40, iters = iter, mutationChance = 0.01, evalFunc = fitt_function, verbose = TRUE)
+#saveRDS(selected_variables, file = "GAmodel.rds")
+
+
+model.GA <- readRDS(file = "GAmodel.rds")
+
+summary(model.GA, echo=TRUE)
+
+print("Area bajo la curva ROC de la mejor solución obtenida:")
+-model.GA$best[15]
+
+variables_best_solution <- c(0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1)
+
+credit_fraud_proyection_dt <- credit_fraud_data_normalized_dt[, variables_best_solution==1, with=FALSE]
+
+```
+
+
+
+## 2.5. Balanceo de la muestra
+
+Claramente, existe un desbalanceo entre las clases. Para resolver este punto, vamos a aplicar la técnica SMOTE para sobremuestrear la clase minoritaria y el método del cubo para obtener un submeestreo equilibrado de la clase mayoritaria, cumpliendo así con las especificaciones técnicas en el examen.
+
+## 2.5.1. Submestreo balanceado mediante el método del cubo
+
+
+```{r, warning=FALSE}
+
+
+datos_no <- subset(credit_fraud_proyection_dt, credit_fraud_proyection_dt$y == "No")
+
+nA <- nrow(datos_no)
+nB <- 600
+
+UNO=rep(1,dim(datos_no)[1])
+
+pik = rep(nB/nA, nA)
+
+X <- cbind(UNO, dim(datos_no[, names(datos_no) != "y", with=FALSE])[1])
+
+
+s=samplecube(as.matrix(X), pik, method=1, order = 1)
+
+muestra = cbind(datos_no,s)
+subbalanced_data <- muestra[muestra$s == 1,]
+subbalanced_data$s  <- NULL
+
+```
+
+## 2.5.2. Sobremuestreo de la clase minoritaria mediante el método SMOTE
+
+
+```{r, warning=FALSE}
+
+balanced_yes_class <- SMOTE(y ~ ., credit_fraud_proyection_dt, perc.over = 22)
+
+balanced_yes_class <- balanced_yes_class[y == "Yes"]
+
+balanced_data <- rbind(subbalanced_data,balanced_yes_class)
+
+```
+
+## 2.5.3. Obtención de las muestras de validación y test
+
+A partir de la muestra de datos generada en los apartados anteriores se van a generar dos muestras:
+  
+     - Una para entrenar las redes bayesianas, lo cual exige la discretización de las variables
+     - Una con los datos sin discretizar, por tanto, usando las variables numéricas para el entrenamiento de los restantes algoritmos
+
+## 2.5.3.1. Creación de datos de entreamiento y test con variables discretizadas
+
+Existen muchas técnicas de discretización de variables, pero nosotros vamos a usar la función proporcionada por los profesores en el documento de preprocesado de datos para obtener una discretización de las variables. Como veremos en la sección de entrenamiento de los algoritmos, esto será suficiente para obtener una buenos predictores.
+
+
+```{r, warning=FALSE}
+
+
+# Función para crear intervalos de las variables explicativas 
+# Argumentos: variable y número de niveles a crear 
+factorizarVariable <- function( variable, cortes ){ 
+  resultado <- NULL 
+  breaks <- NULL 
+  levels <- NULL 
+  etiquetas <- NULL
+  
+  for ( i in 0:cortes ){ 
+    if ( i == 0 ) breaks <- min( variable ) - 1 
+    else if ( i < cortes ){ 
+      quantil = i / cortes 
+      breaks <- c( breaks, quantile(variable, quantil) ) 
+    } 
+    else if ( i == cortes ) breaks <- c( breaks, max( variable ) + 1 ) } 
+  
+  for ( j in 1:cortes ){ 
+    if ( j == 1 ){ 
+      quantil = 1 / cortes 
+      etiquetas <- paste( "Menos de", quantile(variable, quantil) ) 
+    } else if ( j < cortes ){ 
+        quantila = ( j - 1 ) / cortes 
+        quantilb = j / cortes 
+        etiquetas <- c( etiquetas, paste("De", quantile( variable, quantila ), "a", quantile( variable, quantilb ) ) ) 
+    } else if ( j == cortes ){ 
+          quantil = ( j - 1 ) / cortes 
+          etiquetas <- c( etiquetas, paste( "Más de", quantile(variable, quantil) ) ) 
+    } 
+  } 
+  
+  for ( k in 1:cortes ) levels <- c( levels, k ) 
+  
+  resultado <- cut( variable, breaks = breaks, labels = etiquetas, levels = levels ) 
+  return ( resultado ) 
+}
+
+```
+
+Creamos el dataset con las variables discretizadas:
+
+
+```{r, warning=FALSE}
+
+balanced_data.d <- data.table()
+balanced_data.d$V1 <- factorizarVariable(balanced_data$V1, 5)
+balanced_data.d$V2 <- factorizarVariable(balanced_data$V2, 5)
+balanced_data.d$V8 <- factorizarVariable(balanced_data$V8, 5)
+balanced_data.d$V16 <- factorizarVariable(balanced_data$V16, 5)
+balanced_data.d$V22 <- factorizarVariable(balanced_data$V22, 5)
+balanced_data.d$V25 <- factorizarVariable(balanced_data$V25, 5)
+balanced_data.d$V26 <- factorizarVariable(balanced_data$V26, 5)
+#balanced_data.d$Amount <- factorizarVariable(balanced_data$Amount, 5)
+balanced_data.d$y <- balanced_data$y
+
+
+```
+
+Por último creamos las muestras de entrenamiento y validación con las variables discretizadas:
+
+
+```{r, warning=FALSE}
+
+
+set.seed(123)
+train.index.yes.d <- createDataPartition(y = balanced_data.d[y == "Yes"]$y, p= 0.833, list = FALSE)
+train.index.no.d <- createDataPartition(y = balanced_data.d[y == "No"]$y, p= 0.833, list = FALSE)
+
+
+data.training.yes.d <- balanced_data.d[y == "Yes"][train.index.yes.d,]
+data.training.no.d <- balanced_data.d[y == "No"][train.index.no.d,]
+
+data.testing.yes.d <- balanced_data.d[y == "Yes"][-train.index.yes.d,]
+data.testing.no.d <- balanced_data.d[y == "No"][-train.index.no.d,]
+
+
+data.training.d <- rbind(data.training.yes.d,data.training.no.d)
+data.testing.d <- rbind(data.testing.yes.d,data.testing.no.d)
+
+
+```
+
+
+## 2.5.3.2. Creación de datos de entreamiento y test con variables numéricas
+
+Finalmente, creamos otro dataset con las variables numéricas:
+
+
+```{r, warning=FALSE}
+
+
+set.seed(123)
+train.index.yes <- createDataPartition(y = balanced_data[y == "Yes"]$y, p= 0.833, list = FALSE)
+train.index.no <- createDataPartition(y = balanced_data[y == "No"]$y, p= 0.833, list = FALSE)
+
+
+data.training.yes <- balanced_data[y == "Yes"][train.index.yes,]
+data.training.no <- balanced_data[y == "No"][train.index.no,]
+
+data.testing.yes <- balanced_data[y == "Yes"][-train.index.yes,]
+data.testing.no <- balanced_data[y == "No"][-train.index.no,]
+
+
+data.training <- rbind(data.training.yes,data.training.no)
+data.testing <- rbind(data.testing.yes,data.testing.no)
+
+
+
+```
+
+
+Por último, establecemos los parámetros generales para el entrenamiento de los algoritmos:
+
+
+
+```{r, warning=FALSE}
+
+fiveStats = function(...) c ( twoClassSummary(...), defaultSummary(...) )
+
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 5, classProbs = TRUE, summaryFunction = fiveStats)
+
+metrica <- "ROC"
+
+```
+
+
+
+## 3. Entrenamiento de algoritmos
+
+En primer lugar, se presentan las funciones genéricas que se usarán a lo largo del presente apartado:
+
+```{r, warning=FALSE}
+
+get_model_results <- function(model, data_training, data_testing, plot_param, show_confusionMatrix) {
+  print(paste("Resultados para cada uno de los parámetros de la malla:"))
+  print(model)
+  print(paste("#######################################################"))
+  print(paste("Matriz de confusión del modelo:"))
+  print(paste("#######################################################"))
+  print(confusionMatrix(model))
+  if(show_confusionMatrix) {
+    print(paste("#######################################################"))
+    print(paste("Matriz de confusión comparando las predicciones del modelo y los datos de test:"))
+    print(paste("#######################################################"))
+    print(confusionMatrix(predict(model, newdata = data_testing), data_testing$y))
+  }
+  print(paste("#######################################################"))
+  print(paste("Importancia de las variables:"))
+  print(varImp(model))
+  if(plot_param) {
+    print(paste("Gráfico ROC-parámetros:"))
+    plot(model)
+  }
+}
+
+ 
+plot_roc_curve <- function(model, data_training, data_testing ) {
+  print("Curva ROC:")
+  pred_prob_val <- predict(model, data_testing, type="prob")
+  pred_prob_ent <- predict(model, data_training, type="prob")
+  
+  
+  curvaROC_val <- roc(data_testing$y,pred_prob_val[,"Yes"])
+  curvaROC_ent <- roc(data_training$y,pred_prob_ent[,"Yes"])
+  
+  plot(curvaROC_ent,col="blue", main="Simulación con la curva ROC del modelo")
+  plot(curvaROC_val, col="red", add=TRUE)
+  legend("bottomright", legend = c("Entrenamiento", "Validacion"), col = c("blue", "red"), lwd = 2)
+} 
+
+```
+
+
+## 3.1. Modelo TAN
+
+
+Para el entrenamiento del modelo TAN, hacemos uso de la definición de los modelos propios que permite la librería caret. En particular, hacemos uso del modelo proporcionado por los profesores de la asignatura:
+
+```{r, warning=FALSE}
+
+
+modeloTAN <- list(label = "Tree Augmented Naive Bayes Classifier",
+                  library = "bnclassify",
+                  type = "Classification",
+                  parameters = data.frame( parameter = c( 'score', "smooth" ),
+                                           class = c( "character", "numeric" ),
+                                           label = c( 'Score Function', "Smoothing Parameter") ),
+                  # Funciones
+                  grid = function( x, y, len = NULL, search = "grid" ) {
+                    if( search == "grid" ) { 
+                      out <- expand.grid( score = c( 'loglik', 'bic', 'aic' ),
+                                          smooth = 0:( len - 1 ) )
+                    } else {
+                      out <- data.frame( score = sample( c( 'loglik', 'bic', 'aic' ),
+                                         smooth = runif( len, min = 0, max = 10 ),
+                                         size = len, 
+                                         replace = TRUE ) )
+                    }
+                    out
+                  },
+                  loop = NULL,
+                  fit = function( x, y, wts, param, lev, last, classProbs, ... ) {
+                    dat <- if( is.data.frame( x ) ) x else as.data.frame( x )
+                    bnclassify::bnc( 'tan_cl', 'y', x, smooth = param$smooth,... )
+                  },
+                  predict = function( modelFit, newdata, submodels = NULL ) {
+                    if( !is.data.frame( newdata ) ) newdata <- as.data.frame( newdata )
+                    predict( modelFit, newdata )       
+                  },
+                  prob = function( modelFit, newdata, submodels = NULL ) {
+                    if( !is.data.frame( newdata ) ) newdata <- as.data.frame( newdata )
+                    predict( modelFit, newdata, prob = TRUE ) 
+                  },
+                  levels = function( x ) x$obsLevels,
+                  predictors = function( x, s = NULL, ... ) x$xNames,
+                  tags = c( "Bayesian Model TAN", "Categorical Predictors Only" ),
+                  sort = function( x ) x[ order( x[ , 1 ] ), ] )
+
+```
+
+
+Entrenamiento del algoritmo.
+
+```{r, warning=FALSE}
+
+#TAN.fit <- train( data.training.d, 
+#                   data.training.d$y, 
+#                   method = modeloTAN, 
+#                   metric = metrica, 
+#                   trControl = train.control )
+
+#saveRDS(TAN.fit, file = "TAN.rds")
+
+TAN.fit <- readRDS(file = "TAN.rds")
+
+get_model_results(TAN.fit, data.training.d, data.testing.d, TRUE, TRUE)
+plot_roc_curve(TAN.fit, data.training.d, data.testing.d)
+
+
+```
+
+## 3.2. Modelo Hill Climbing
+
+
+```{r, warning=FALSE}
+
+modeloTANHC <- list(label = "Hill Climbing Tree Augmented Naive Bayes Classifier",
+                  library = "bnclassify",
+                  type = "Classification",
+                  parameters = data.frame( parameter = c("smooth"),
+                                           class = c("numeric"),
+                                           label = c("Smoothing Parameter")),
+                  # Funciones
+                  grid = function( x, y, len = NULL, search = "grid" ) {
+                    if( search == "grid" ) { 
+                      out <- expand.grid(smooth = 0:( len - 1 ) )
+                    } else {
+                      out <- data.frame( smooth= runif( len, min = 0, max = 10 ), 
+                                         size = len, 
+                                         replace = TRUE )
+                    }
+                    out
+                  },
+                  loop = NULL,
+                  fit = function( x, y, wts, param, lev, last, classProbs, ... ) {
+                    dat <- if( is.data.frame( x ) ) x else as.data.frame( x )
+                    bnclassify::bnc( 'tan_hc', 'y', x, 5, smooth = param$smooth )
+                  },
+                  predict = function( modelFit, newdata, submodels = NULL ) {
+                    if( !is.data.frame( newdata ) ) newdata <- as.data.frame( newdata )
+                    predict( modelFit, newdata )       
+                  },
+                  prob = function( modelFit, newdata, submodels = NULL ) {
+                    if( !is.data.frame( newdata ) ) newdata <- as.data.frame( newdata )
+                    predict( modelFit, newdata, prob = TRUE ) 
+                  },
+                  levels = function( x ) x$obsLevels,
+                  predictors = function( x, s = NULL, ... ) x$xNames,
+                  tags = c( "Bayesian Model TAN HC", "Categorical Predictors Only" ),
+                  sort = function( x ) x[ order( x[ , 1] ) , ] )
+
+
+```
+
+
+
+```{r, warning=FALSE}
+
+#TANHC.fit <- train( data.training.d, 
+#                   data.training.d$y, 
+#                   method = modeloTANHC, 
+#                   metric = metrica, 
+#                   trControl = train.control )
+
+
+#saveRDS(TANHC.fit, file = "TANHC.rds")
+
+TANHC.fit <- readRDS(file = "TANHC.rds")
+
+get_model_results(TANHC.fit, data.training.d, data.testing.d, TRUE, TRUE)
+plot_roc_curve(TANHC.fit, data.training.d, data.testing.d)
+
+
+```
+
+
+## 3.3. Modelo AODE
+
+
+```{r, warning=FALSE}
+
+modeloAODE <- list(label = "AODE Naive Bayes Classifier",
+                            library = "bnclassify",
+                            type = "Classification",
+                            parameters = data.frame( parameter = c( "smooth" ),
+                                                     class = c( "numeric" ),
+                                                     label = c( "Smoothing Parameter" ) ),
+                            grid = function( x, y, len = NULL, search = "grid" ) {
+                              if( search == "grid" ) { 
+                                out <- expand.grid( smooth = 0:( len - 1 ) )
+                              } else {
+                                out <- data.frame( smooth = runif( len, min = 0, max = 10 ),
+                                                   size = len, 
+                                                   replace = TRUE )
+                              }
+                              out
+                            },
+                            loop = NULL,
+                            fit = function( x, y, wts, param, lev, last, classProbs, ... ) {
+                              dat <- if( is.data.frame( x ) ) x else as.data.frame( x )
+                              bnclassify::bnc( 'aode', 'y', x, smooth = param$smooth )
+                            },
+                            predict = function( modelFit, newdata, submodels = NULL ) {
+                              if(!is.data.frame( newdata ) ) newdata <- as.data.frame( newdata )
+                              predict( modelFit, newdata )       
+                            },
+                            prob = function(modelFit, newdata, submodels = NULL) {
+                              if(!is.data.frame(newdata)) newdata <- as.data.frame(newdata)
+                              predict( modelFit, newdata, prob = TRUE ) 
+                            },
+                            levels = function( x ) x$obsLevels,
+                            predictors = function( x, s = NULL, ... ) x$xNames,
+                            tags = c( "Bayesian Model AODE", "Categorical Predictors Only"),
+                            sort = function( x ) x[ order( x[ , 1] ), ] )
+
+
+```
+
+
+
+```{r, warning=FALSE}
+
+
+# Entrenamiento
+#AODE.fit <- train( data.training.d, 
+#                   data.training.d$y, 
+#                   method = modeloAODE, 
+#                   metric = metrica, 
+#                   trControl = train.control )
+
+#saveRDS(AODE.fit, file = "AODE.rds")
+
+AODE.fit <- readRDS(file = "AODE.rds")
+
+get_model_results(AODE.fit, data.training.d, data.testing.d, TRUE, TRUE)
+plot_roc_curve(AODE.fit, data.training.d, data.testing.d)
+
+
+```
+
+
+## 3.4. Modelo de redes neuronales
+
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#nnGrid <-  expand.grid(size = 1:30)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#nn.fit <- train(x = data.training[, names(data.training) != "y", with=FALSE], 
+#             y = data.training$y, 
+#             method = "mlp",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = metrica
+#             tuneGrid = nnGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(nn.fit, file = "nn.rds")
+
+nn.fit <- readRDS(file = "nn.rds")
+
+get_model_results(nn.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(nn.fit, data.training, data.testing)
+
+
+```
+
+
+## 3.5. Modelo de k vecinos
+
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#knnGrid <-  expand.grid(k  = 2:100)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#knn.fit <- train(y ~ . , 
+#             data = data.training, 
+#             method = "knn",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = metrica
+#              tuneGrid = knnGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(knn.fit, file = "knn.rds")
+
+knn.fit <- readRDS(file = "knn.rds")
+
+get_model_results(knn.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(knn.fit, data.training, data.testing)
+
+
+```
+
+
+
+## 3.6. Modelo kernel k vecinos
+
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#kknnGrid <- expand.grid(kmax = 1:20,            
+#                        distance = 1:15,        
+#                        kernel = c('gaussian')
+#                        )
+#
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#kknn.fit <- train(y ~ . , 
+#             data = data.training, 
+#             method = "kknn",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = metrica
+#              tuneGrid = kknnGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(kknn.fit, file = "kknn.rds")
+
+kknn.fit <- readRDS(file = "kknn.rds")
+
+get_model_results(kknn.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(kknn.fit, data.training, data.testing)
+
+
+```
+
+
+## 3.7. Modelo de random forest
+
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#RFGrid <-  expand.grid(mtry  = 1:30)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#rf.fit <- train(x = data.training[, names(data.training) != "y", with=FALSE], 
+#             y = data.training$y, 
+#             method = "parRF",
+#             parms = list(split = "information"),
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = metrica,
+#             tuneGrid = RFGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(rf.fit, file = "rf.rds")
+
+rf.fit <- readRDS(file = "rf.rds")
+
+get_model_results(rf.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(rf.fit, data.training, data.testing)
+
+
+```
+
+
+## 3.8. Modelo C5.0
+
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#c5Grid <-  expand.grid(trials = 1:30, 
+#                        model = c("tree", "rules"), 
+#                        winnow = c(TRUE, FALSE))
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#c5_0.fit <- train(y ~ . , 
+#             data = data.training, 
+#             method = "C5.0",
+#             parms = list(split = "information"),
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = metrica,
+#              tuneGrid = c5Grid
+#            )
+#stopImplicitCluster()
+
+
+#saveRDS(c5_0.fit, file = "c50.rds")
+
+c5_0.fit <- readRDS(file = "c50.fit")
+
+get_model_results(c5_0.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(c5_0.fit, data.training, data.testing)
+
+
+
+```
+
+
+## 3.9. Model boosting
+
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#boostGrid <-  expand.grid(nIter = 1:50, method = c("Adaboost.M1", "Real adaboost"))
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#adaboost.fit <- train(x = data.training[, names(data.training) != "y", with=FALSE], 
+#             y = data.training$y, 
+#             method = "adaboost",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = metrica,
+#              tuneGrid = boostGrid
+#             )
+#stopImplicitCluster()
+
+
+#saveRDS(adaboost.fit, file = "adaboost.rds")
+
+adaboost.fit <- readRDS(file = "adaboost.rds")
+get_model_results(adaboost.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(adaboost.fit, data.training, data.testing)
+
+
+
+```
+
+
+
+## 3.10. Model glmboost
+
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#glmboostGrid <-  expand.grid(mstop = 1:50, prune=c(0.1, 0.01, 0.5, 0.9, 1, 1.1, 1.5, 2))
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#glmboost.fit <- train(x = data.training[, names(data.training) != "y", with=FALSE], 
+#             y = data.training$y, 
+#             method = "glmboost",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = metrica,
+#              tuneGrid = glmboostGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(glmboost.fit, file = "glmboost.rds")
+
+glmboost.fit <- readRDS(file = "glmboost.rds")
+get_model_results(glmboost.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(glmboost.fit, data.training, data.testing)
+
+
+
+```
+
+
+
+## 3.11. Model logistboost
+
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#logistboostGrid <-  expand.grid(nIter = 1:14)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#logitboost.fit <- train(x = data.training[, names(data.training) != "y", with=FALSE], 
+#             y = data.training$y, 
+#             method = "LogitBoost",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = metrica,
+#              tuneGrid = logistboostGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(logitboost.fit, file = "logitboost.rds")
+
+logitboost.fit <- readRDS(file = "logitboost.rds")
+
+get_model_results(logitboost.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(logitboost.fit, data.training, data.testing)
+
+
+
+```
+
+
+## 3.12. Model bagging
+
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#bagGrid <-  expand.grid(vars  = 1:50)
+#bag.fit <- train(x = data.training[, names(data.training) != "y", with=FALSE], 
+#             y = data.training$y, 
+#             method = "bag",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = metrica,
+#             tuneGrid = bagGrid
+#             )
+#stopImplicitCluster()
+
+
+#saveRDS(bag.fit, file = "bag.rds")
+
+bag.fit <- readRDS(file = "bag.rds")
+
+get_model_results(bag.fit, data.training, data.testing, FALSE, TRUE)
+plot_roc_curve(bag.fit, data.training, data.testing)
+
+
+
+```
+
+
+## 3.13. Modelo adabag
+
+
+
+```{r, warning=FALSE}
+
+#set.seed(123)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#adabag.fit <- train(x = data.training[, names(data.training) != "y", with=FALSE], 
+#             y = data.training$y, 
+#             method = "AdaBag",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = metrica
+#             #tuneGrid = bagGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(adabag.fit, file = "adabag.rds")
+
+adabag.fit <- readRDS(file = "adabag.rds")
+
+get_model_results(adabag.fit, data.training, data.testing, FALSE, TRUE)
+plot_roc_curve(adabag.fit, data.training, data.testing)
+
+
+
+```
+
+
+## 3.14. Modelo boosting (xgbTree)
+
+
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#xbgTreeGrid <-  expand.grid(nrounds  = 1:20,
+#                            max_depth = 1:10,
+#                            eta = c(0.01, 0.015, 0.020, 0.025),
+#                            gamma=1:5,
+#                            colsample_bytree = c( 0.4, 0.6, 0.8, 1.0 ),
+#                            min_child_weight = 1:5,
+#                            subsample = c( 0.5, 0.75, 1.0 ))
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#bagGrid <-  expand.grid(vars  = 1:50)
+#adabag.fit <- train(x = data.training[, names(data.training) != "y", with=FALSE], 
+#             y = data.training$y, 
+#             method = "xgbTree",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = metrica,
+#             tuneGrid = xbgTreeGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(xgbTree.fit, file = "xgbTree.rds")
+
+xgbTree.fit <- readRDS(file = "xgbTree.rds")
+
+
+get_model_results(xgbTree.fit, data.training, data.testing, FALSE, TRUE)
+plot_roc_curve(xgbTree.fit, data.training, data.testing)
+
+
+
+```
+
+
+## 4. Contraste de hipótesis
+
+Realizamos el contraste de hipótesis y gráfico para la comparativa de los distintos modelos.
+
+```{r, warning=FALSE}
+
+# Se excluye bagging
+modelos <- list(TAN=TAN.fit, HILLCLIMBING=TANHC.fit, AODE=AODE.fit, C5.0 = c5_0.fit,  RF = rf.fit, KNN = knn.fit, KKNN = kknn.fit, MLP = nn.fit, ADABOOST = adaboost.fit, GLMBOOST=glmboost.fit, LOGITBOOST=logitboost.fit, ADABAG=adabag.fit, BAG=bag.fit, XGBTREE=xgbTree.fit)
+resultados <- resamples(modelos)
+resultados
+
+summary(resultados)
+
+
+dotplot(resultados)
+
+diferencias <- diff(resultados)
+summary(diferencias)
+
+
+```
+
+## 5. Tabla resumen con las métricas
+
+Damos una tabla comparativa con las distincas métricas para cada uno de los modelos entrenados:
+
+```{r, warning=FALSE}
+
+Result <- function ( modelos ){
+  n_modelos = length(modelos)
+  comparativa <- matrix(0, n_modelos, 7)
+  pred <- NULL
+  data_testing <- NULL
+  for (i in 1:n_modelos){
+    if(modelos[[i]]$method == "custom") {
+      data_testing <- data.testing.d
+    }
+    else {
+      data_testing <- data.testing
+    }
+    pred[[i]] <- predict(modelos[i], data_testing, type="prob")
+    comparativa[i,1] = modelos[[i]]$method
+    if (modelos[[i]]$method == "treebag"){
+       comparativa[i,2] = "-"
+       comparativa[i,3] = "-"
+       comparativa[i,4] = "-"
+       comparativa[i,5] = modelos[[i]]$results$Accuracy
+       comparativa[i,6] = modelos[[i]]$results$Kappa
+    }else{
+       comparativa[i,2] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("ROC")]
+       comparativa[i,3] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("Sens")]
+       comparativa[i,4] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("Spec")]
+       comparativa[i,5] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("Accuracy")]
+       comparativa[i,6] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("Kappa")]
+    }
+    comparativa[i,7] = auc(roc(data_testing$y,pred[[i]][[1]][,"Yes"]))
+  }
+  colnames(comparativa) <- c("Modelo", "ROC", "Sens", "Spec", "Accuracy", "Kappa", "ROC Validación")
+  return(comparativa)
+}
+
+modelos <- list(TAN=TAN.fit, HILLCLIMBING=TANHC.fit, AODE=AODE.fit, C5.0 = c5_0.fit,  RF = rf.fit, KNN = knn.fit, KKNN = kknn.fit, MLP = nn.fit, ADABOOST = adaboost.fit, GLMBOOST=glmboost.fit, LOGITBOOST=logitboost.fit, ADABAG=adabag.fit, BAG=bag.fit, XGBTREE=xgbTree.fit)
+Result(modelos)
+
+
+```
+
+
+## 6. Selección del mejor modelo
+
+Tomando como métrica de referencia la curva ROC, no se ve ni en los contrastes de hipótesis, ni en las gráficas ni en las tablas resumen una diferencia significativa entre los tres modelos de redes bayesianas. Los tres clasifican correctamente los datos sin diferencias significativas desde el punto de vista estadístico. Sin embargo, los contrastes de hipótesis sí detectan (p < 0.05) una diferencia significativa entre el modelo xgbtree y los modelos de redes bayesianas, siendo mejor predictor elprimero citado. No se hace la comparativa con el resto de modelos, ya que no son propios de este módulo.

@@ -1,0 +1,950 @@
+---
+title: "Trabajo Fin Master"
+author: "Ricardo Alcañiz Frutos"
+date: "10/10/2020"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#library(Boruta)
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(CHAID))
+suppressPackageStartupMessages(library(cowplot))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(DMwR))
+suppressPackageStartupMessages(library(doParallel))
+suppressPackageStartupMessages(library(dummies))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(e1071))
+suppressPackageStartupMessages(library(gdata))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(ggpubr))
+#library(kableExtra)
+suppressPackageStartupMessages(library(MASS))
+suppressPackageStartupMessages(library(mice))
+suppressPackageStartupMessages(library(nortest))
+suppressPackageStartupMessages(library(pander))
+suppressPackageStartupMessages(library(pROC))
+suppressPackageStartupMessages(library(randomForest))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(rpart))
+#suppressPackageStartupMessages(library(rpart.plot))
+suppressPackageStartupMessages(library(sampling))
+suppressPackageStartupMessages(library(VIM))
+```
+
+## Introducción y objetivos
+
+
+El presente trabajo se encuadra dentro del ámbito socioeconómico y toma como base de datos la referenciada en [1], la cual contiene 48842 registros del censo estadounidense con datos desagregados a nivel individual, incluyendo diversos aspecto de índole social y económica tal y como se detallan en el epígrafe [referenciar epígrafe], junto con una variable dependiente de tipo dicotómico indicando si se supera un cierto umbral de ingresos (50k). Así, el objetivo primordial es resolver el problema de clasificación que define la propia base de datos. Además, se explorará la estructura predictiva de los modelos cuya conclusión es definir unos indicadores sencillos, pero significativos en la búsqueda del perfil por encima del umbral de ingresos establecido en la base de datos. Lo interesante es que dichos indicadores pueden servir de entrada a otros estudios, particularmente al propio análisis de datos. En fecto, una vez establecidos las métricas que caracterizan el objeto de estudio, puede plantearse más claramente una nueva representación de la base de datos, conteniendo la información más relevante y omitiendo la que no es significativa o en nada influeyente. Estas segunda y sucesivas iteraciones no se llevarán a cabo. Por lo tanto, las preguntas a responder son:
+  
+    - ¿Podemos conseguir, para la base de datos dada, un predictor con un nivel de precisión aceptable?
+    - Si es posible resolver el primer problema, ¿podemos extraer unos indicadores claros que nos manifiesten la estructura predictiva y arrojen luz sobre los factores más importantes para la clasificación de las personas, según sus ingresos?
+    
+Sin embargo, ambos objetivos no tienen porqué ir necesariamente en la misma dirección. De hecho, resumir y agregar la información, objetivos deseables, si se quiere obetener unas métricas lo más sencillas posible, puede tener consecuencias en la exactitud del modelo. Por tanto, dependiendo de  la base de datos, puede incluso plantearse la opción de manejar diferentes representaciones de la base de datos para cada uno de los fines. Para este caso, mostramos cómo con una única representación se pueden satisfacer ambos objetivos simultáneamente.
+
+## Base de datos
+
+### Descripción de la base de datos
+
+
+Definimos en la siguiente tabla la estructura de la base de datos: 
+
+```{r, echo=FALSE}
+
+database.descripcion <- data.frame(
+  Variable = c('Age', 
+               'Workclass', 
+               'fnlwgt', 
+               'education', 
+               'education-num', 
+               'marital-status', 
+               'occupation', 
+               'relationship', 
+               'race', 
+               'sex', 
+               'capital-gain', 
+               'capital-loss', 
+               'hours-per-week', 
+               'native-country'
+               ),
+  Tipo = c('Continua', 
+           'Categorica', 
+           'Continua', 
+           'Categorica', 
+           'Numerica', 
+           'Categorica', 
+           'Categorica', 
+           'Categorica', 
+           'Categorica', 
+           'Categorica', 
+           'Continua', 
+           'Continua', 
+           'Continua', 
+           'Categorica'
+           ),
+  Descripcion = c('Edad de la persona', 
+                  'Clase a la que pertenece', 
+                  'Peso asignado segun las caracteristicas individuales', 
+                  'Categoria educativa', 
+                  'Ordinal asignado a cada categoria educativa', 
+                  'Estado civil', 
+                  'Ocupacion', 
+                  'Relacion', 
+                  'Raza', 
+                  'Sexo', 
+                  'Ganancia Capital', 
+                  'Perdida Capital', 
+                  'Horas a la semana', 
+                  'Pais de procedencia'
+                  )
+)
+
+pandoc.table(database.descripcion, style="grid")
+
+```
+
+## Lectura, limpieza, incorporación de variables e imputación de valores faltantes
+
+La base de datos se da en sendos ficheros de entrenamiento y validación, por lo que procedemos a fusionarlos en un único dataset para realizar las transformaciones al conjunto de todos los datos. Por otro lado, los datos presentan unos pequeños problemas con los espacios en blanco, ya que se introducen de forma arbitraria y hace que se dupliquen categorías de los factores. Por ello, es necesario normalizarlas eliminando los espacios en blanco.
+
+```{r, warning=FALSE}
+# Lectura de los datos de entrenamiento y validación y fusionado en un único dataset
+census.training <- read.table(file="adult.data", header=TRUE, sep=",")
+census.test <- read.table(file="adult.test", header=TRUE, sep=",")
+census <- union(census.training, census.test)
+
+# Normalización de las categorías y eliminación de espacios en blanco
+census$y <- gsub("\\.", "", trim(census$y))
+census$workclass <- trim(census$workclass)
+census$education <- trim(census$education)
+census$marital.status <- trim(census$marital.status)
+census$occupation <- trim(census$occupation)
+census$relationship <- trim(census$relationship)
+census$race <- trim(census$race)
+census$sex <- trim(census$sex)
+census$native.country <- trim(census$native.country)
+census$native.country <- as.factor(census$native.country)
+census$y <- as.factor(census$y)
+# Estrucutura del dataset tras normalizar
+str(census)
+```
+
+## Incorporación de ratio de desempleo por nivel educativo
+
+La ley de de oferta y demanda es el principio que, con caracter general, marca el precio de los productos en el mercado. Este principio tiene su extensión al ámbito laboral. Así, a priori es de esperar que profesiones con un alto nivel de demanda y poca oferta tengan un salario alto, mientras que profesiones con más oferta que demanda ofrezcan salarios más modestos. En vista de este razonamiento, es interesante la incorporación de datos del nivel de paro sobre diferentes estratos para la serie temporal anual de 1994. De manera ideal, la incorporación a buscar es al mismo nivel de granularidad que los datos de nuestro dataset, esto es, tener los datos de la serie temporal agregados por las variables que componen la base de datos (clase trabajadora, raza, edad, etc). Los datos se han recogido de la oficina de estadísticas de EEUU. Sin embargo, la incorporación de los datos para el año requerido tiene serias deficiencias ya que, en general, o están demasiado agregados, tienen demasiados valores faltantes o los datos maestros no son comparables con los de la base de datos. Por todo ello, sólo ha sido posible introducir la variable afectando a los distintos niveles educativos. Para ello, se han incorporado a un fichero los datos por las distintas categorías educativas y se ha creado una variable auxiliar en la base de datos para poder cruzar los datos usando dicha variable auxiliar. Es evidente que esta forma de incorporar los datos no recoge toda la variabilidad posible del nivel del paro y puede introducir errores, por posible correlación con la variable educación. Sin embargo, como veremos, aunque la variable no mejora demasiado la capacidad predictiva del modelo, es una variable significativa y a tener en cuenta. 
+
+```{r}
+# Lectura del excel con los datos de paro anuales por estratos educativos
+EmploymentRateByEducationLevel <- read_excel("UnemploymentRateByEducationLevel.xlsx")
+EmploymentRateByEducationLevel
+
+# Incorporación de la categoría educativa para el cruce con los datos de la serie temporal
+census <- census %>% mutate(CategoryEducationlevel = case_when(education == 'Preschool' ~ 'HighSchoolGraduatesNoCollege',
+                                                               education == '1st-4th' ~ 'HighSchoolGraduatesNoCollege',
+                                                               education == '5th-6th' ~ 'HighSchoolGraduatesNoCollege',
+                                                               education == '7th-8th' ~ 'HighSchoolGraduatesNoCollege',
+                                                               education == '9th' ~ 'HighSchoolGraduatesNoCollege',
+                                                               education == '10th' ~ 'HighSchoolGraduatesNoCollege',
+                                                               education == '11th' ~ 'HighSchoolGraduatesNoCollege',
+                                                               education == '12th' ~ 'HighSchoolGraduatesNoCollege',
+                                                               education == 'HS-grad' ~ 'HighSchoolGraduatesNoCollege',
+                                                               education == 'Some-college' ~ 'SomeCollegeOrAssociateDegree',
+                                                               education == 'Assoc-voc' ~ 'SomeCollegeOrAssociateDegree',
+                                                               education == 'Assoc-acdm' ~ 'SomeCollegeOrAssociateDegree',
+                                                               education == 'Bachelors' ~ 'BachelorDegreeAndHigher',
+                                                               education == 'Prof-school' ~ 'BachelorDegreeAndHigher',
+                                                               education == 'Masters' ~ 'BachelorDegreeAndHigher',
+                                                               education == 'Doctorate' ~ 'BachelorDegreeAndHigher')
+                            )
+
+# Cruce de los datos e incorporación del nivel de desempleo por categoría social
+census <- merge(census, EmploymentRateByEducationLevel, by="CategoryEducationlevel", all.x = TRUE)
+# Eliminamos la variable auxiliar
+census$CategoryEducationlevel <- NULL
+```
+
+
+# Valores faltantes
+
+## Estudio de los valores faltantes
+
+Aunque algunos algoritmos, especialmente los basados en estructuras de árbol, tienen incorporados imputación automática de valores faltantes y puede ser interesante mantener dos versiones de datos de entrenamiento, esto es, una versión con los valores faltantes miputados y otra que no, siguiendo el planteamiento inical, sólo vamos a mantener una versión de la base de datos de entrenamiento y, por lo tanto, es necesario el tratamiento de los valores faltantes. El siguiente chunck realiza una representación de las variables y el porcentaje de valores restantes: 
+
+```{r}
+#Sustitución de valores faltanets por NA
+for(col in colnames(census)) {
+ census[, c(col)][census[, c(col)] == '?'] <- NA 
+}
+# Número de líneas incompletas, es decir, con al menos una columna a null
+length(which(!complete.cases(census)))
+
+# Columnas con al menos un valor nulo
+colWithNullValue <- census[, colnames(census) %in%  colnames(census)[colSums(is.na(census)) > 0]]
+colnames(colWithNullValue)
+# Porcentaje de valores nulos por columna
+aggr(colWithNullValue)
+```
+
+Como se ve de manera clara, las variables tienen un bajo índice valores faltantes, un 5%, por lo que se está dentro de un umbral razonable para imputar los valores sin modificar demasiado las variables predictoras.
+
+## Imputación de valores faltantes
+
+De hecho, de entre todos los algoritmos de imputación de valores faltantes, hemos tomado uno que no alterase demasiado la distribución de los datos. En particular, hemos usado la moda para el país de procedencia, bajo la observación de que la mayoría de los datos son, como era de esperar en este caso, de población de origen estadounidense:
+
+```{r}
+# Top n de ratio de nacionalidad
+census %>% filter(!is.na(native.country)) %>% group_by(native.country) %>%  summarise(n = n()) %>%  mutate(freq = paste0(round(100 * n/sum(n), 2), "%")) %>% arrange(desc(freq))  %>% top_n(n = 5)
+```
+
+Por tanto, en este caso la moda tiene un alto valor a priori, por lo que usamos la mimsma para completar los valores faltantes, verificando que no se alteran significativamente los datos:
+
+```{r, warning=FALSE}
+# Completamos los valores nulos usando la moda
+native.country.mode <- census %>% filter(!is.na(native.country)) %>% group_by(native.country) %>%  summarise(n = n()) %>%  mutate(freq = paste0(round(100 * n/sum(n), 2), "%")) %>% arrange(desc(freq))  %>% top_n(n = 1) %>% dplyr::select(native.country)
+
+# imputación de la moda a los valores faltantes 
+census[, c('native.country')][is.na(census[, c('native.country')])] <- as.factor(as.matrix(native.country.mode))
+
+
+# Top n de ratio de nacionalidad
+census %>% group_by(native.country) %>%  summarise(n = n()) %>%  mutate(freq = paste0(round(100 * n/sum(n), 2), "%")) %>% arrange(desc(freq))  %>% top_n(n = 5)
+```
+
+Usando el mismo principio de mínima alteración en los datos, se ha seleccionado el algoritmo CART para la imputación de los restantes variables con valores nulos:
+
+```{r}
+# Frecuencia usando l 
+census %>% filter(!is.na(workclass)) %>% group_by(workclass) %>%  summarise(n = n()) %>%  mutate(freq = paste0(round(100 * n/sum(n), 2), "%")) %>% arrange(desc(freq))
+
+# Top n de ratio de ocupacion
+census %>% filter(!is.na(occupation)) %>% group_by(occupation) %>%  summarise(n = n()) %>%  mutate(freq = paste0(round(100 * n/sum(n), 2), "%")) %>% arrange(desc(freq))
+
+# Método elegido para la imputación de variables faltantes
+#tmp.workclass.mice <- mice(census, m=5, maxit=5,meth='cart',seed='500')
+#saveRDS(tmp.workclass.mice, file = "tmp.workclass.mice.rds")
+tmp.workclass.mice <- readRDS(file = "tmp.workclass.mice.rds")
+
+census.tmp <- complete(tmp.workclass.mice, 1)
+
+# Top n de ratio de nacionalidad
+census.tmp  %>% group_by(workclass) %>%  summarise(n = n()) %>%  mutate(freq = paste0(round(100 * n/sum(n), 2), "%")) %>% arrange(desc(freq))
+
+# Top n de ratio de ocupacion
+census.tmp %>% group_by(occupation) %>%  summarise(n = n()) %>%  mutate(freq = paste0(round(100 * n/sum(n), 2), "%")) %>% arrange(desc(freq))
+
+# Sustituímos el dataset temporal con los datos imputados por el data set real
+census <- census.tmp
+```
+
+
+# Análisis descriptivo
+
+## Exploración descriptiva de los datos
+
+Para tener una primera intuición de las relaciones entre las variables, se representan mediante resúmenes de datos agregados y gráficos el impacto que tiene las distintas variables en la separabilidad de las categorías de la variable respuesta. Se muestra la métrica normalizada número de casos con unos ingresos mayores a 50k respecto al total:
+
+
+```{r}
+plot_by_factor<- function(dataset, factor, respuesta, clase_ref) {
+
+census.dt <- as.data.table(dataset)
+cond <- quote(y == clase_ref)
+# Cálculo por factor
+tmp <- merge(census.dt[, . (cnt = .N), by = c(factor, respuesta)][eval(cond), ],
+census.dt[, . (cnt = .N), by = c(factor)], by=factor, all.data=TRUE)[, c(factor, respuesta, "cnt.x", "cnt.y"), with=FALSE]
+
+names(tmp) <- c(factor, respuesta, "num", "total")
+
+
+print(tmp)
+
+# Plot por frecuencia
+h1 <- ggplot(as.data.frame(tmp), aes_string(x = paste("reorder(", factor, ",", "num / total)", sep=" "), y = "num / total")) +
+  geom_bar(fill = "#0073C2FF", stat = "identity") +
+  scale_x_discrete(guide = guide_axis(n.dodge=3)) +
+  theme_pubclean()
+
+print(h1)
+}
+```
+
+### Exploración descriptiva a nivel de factor
+
+Se representan en primer lugar las variables categóricas:
+
+```{r}
+factor.names <- names(Filter(is.factor, census))
+
+for(factor in factor.names[!factor.names %in% c ("y")]) {
+  plot_by_factor(census, factor, "y", ">50K")  
+}
+```
+
+Se observa que:
+
+   - Existen categorías que tienen un número de casos muy pequeño y, por lo tanto, no resultan estadísticamente significativos, por lo que puede ser interesante fusionarlos con categorías con un número mayor de casos
+   - A priori, parece que el estado civil y la relación son las variables que mejor discrminan los la varviable respuesta 
+
+### Exploración descriptiva variable continuas
+
+
+Antes de entrar de lleno en la trasformación de los datos, es interesante estudiar las intereracciones entre las variables. 
+
+```{r}
+# age
+g2 <- ggplot(data = census,
+             aes(x = log(age))) +
+    geom_line(stat="density", color = "red") +
+    xlab("Gasto Total") +
+    ylab(label = NULL)
+print(g2)
+
+# hours.per.week
+g2 <- ggplot(data = census,
+             aes(x = hours.per.week)) +
+    geom_line(stat="density", color = "red") +
+    xlab("Gasto Total") +
+    ylab(label = NULL)
+print(g2)
+
+# capital.gain
+g2 <- ggplot(data = census[census$capital.gain > 0,],
+             aes(x = log(capital.gain))) +
+    geom_line(stat="density", color = "red") +
+    xlab("Gasto Total") +
+    ylab(label = NULL)
+print(g2)
+
+# capital.loss
+g2 <- ggplot(data = census[census$capital.loss > 0,],
+             aes(x = log(capital.loss))) +
+    geom_line(stat="density", color = "red") +
+    xlab("Gasto Total") +
+    ylab(label = NULL)
+print(g2)
+```
+
+
+Como puede observarse, existen muchos factores que presentan pocos casos y que, por lo tanto, son poco significativos desde el punto de vista estadístico. Para obtener mejores estimadores, vamos a estudiar la clusterización de los niveles de cada factor. Entre otras estrategias, se pueden plantear las siguientes: 
+
+  - Dada una variable a endógena y otra exógena podemos dividir la varianza de la primera en la varianza intragrupos y varianza intergrupos.  Minimizando la primera (esencialmente, maximizar el estadístico $F$), nos da un criterio para obtener grupos homogéneos de variables.
+    
+ - Dado que trabajamos con variables nominales, podemos hacer uso del estadístico $\chi^2$ para obtener cluster de factores dependientes. Dada la tabla de contingencia construída a partir de la variable indeoendiente y una variable exógena nominal, podemos ir buscando pares de categorías con un valor de p menor que un cierto umbral e ir fusionando éstas. Este proceso lo podemos continuar hasta obtener la definición de los cluster. Esto, tal y como se describre en (hacer referencia), forma parte del algoritmo CHAID, por lo que haremos uso del mismo para la definición de los clústers de categorías.
+
+Por otro lado, las variables de ingresos y gasto presentan unos máximos llamativos, que pueden sugerirnos la discretización de las variables en factores. Para la obtención de estos puntos de corte, usaremos el algoritmo CART, tal y como se explica en (hacer referencia).
+
+
+# Interacción entre los factores
+
+Antes de entrar en la transformación de los datos, se estudia si existe variabilidad explicada por las interacciones, tal y como se explica en (hacer referencia):
+
+```{r}
+#glm.model <- glm(y ~ ., family="binomial", data = census)
+#mod <- Predictor$new(glm.model, data = census, y = census$y, class = "classification")
+#ia <- Interaction$new(mod)
+#saveRDS(ia, file = "ia.rds")
+ia <- readRDS(file = "ia.rds")
+ia$plot()
+```
+
+Como se observa, la variabilidad explicada por la interacción entre las variables es despreciable e igualmente, aunque no mostraremos el gráfico, las correlaciones entre las varibales no son lo suficientementesignificativas como para intentar abordar métodos estadísticos de reumen de la información, como análisis factorial. La variabilidad explicada es la aportada por cada una de las variables, sin tener en cuenta efectos de ningún tipo.
+
+# Selección de variables
+
+Dada un estimador de una variable alatoria $Y$, sabemos que el error en la estimación puede descomponerse, en general, en una parte correspondiente al sesgo y otra correspondiente a la varianza del estimador. Es por ello que buscar un equilibrio entre ambos errores de suma importancia y, en este sentido, una buena elección de variables es de suma importancia. La omisión de variables relevantes afecta negativamente en el sesgo, mientras que la inclusión de variables redundantes o poco significativas aumentan la varianza del estimador. De las múltiples herramientas usadas para la selección de variables, usaremos el modelo random forest para la selección de varibles, conservando el 90% de la importancia de las variables seleccionadas.
+
+
+```{r}
+# Transformación de la variable respuesta
+census$y <- as.factor(ifelse(census$y == ">50K", "yes", "no"))
+
+
+
+#glm.model <- glm(y ~ ., family="binomial", data = census)
+#summary(glm.model)
+
+#set.seed(999)
+#rfGrid <-  expand.grid(mtry  = 5:10)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#rf.fit <- train(y ~ ., 
+#             data = census, 
+#             method = "parRF",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#             tuneGrid = rfGrid
+#             )
+#stopImplicitCluster()
+#rf.fit
+#saveRDS(rf.fit, file = "rf_sv.rds")
+
+# Lectura del modelo entrenado
+rf_sv.fit <- readRDS(file = "rf_sv.rds")
+# Ranking de importancia de variables para RF
+vImp <- varImp(rf_sv.fit, scale = FALSE)
+# Creación dedataframe
+ImpMeasure <- as.data.frame(vImp$importance)
+ImpMeasure$Vars <- row.names(ImpMeasure)
+# Creaación de una calave surrogada, por orden de importancia de las variables
+ImpMeasure <- mutate(ImpMeasure[order(ImpMeasure$Overall, decreasing = TRUE), ], id=row_number())
+# Cálculo de la importancia acumulada, mediante cross join
+CJ_ImpMeasure <- tidyr::crossing(ImpMeasure, ImpMeasure)
+# Cálculo de la importancia absoluta (para cada fila i, sumar la importancia de todas las filas con un id menor o igual que i)
+CJ_ImpMeasure <- CJ_ImpMeasure[CJ_ImpMeasure$id1 <= CJ_ImpMeasure$id, ]
+CJ_ImpMeasure <- CJ_ImpMeasure %>% group_by(id) %>%  summarise(AccImportance = sum(Overall1))
+VarImportance <- merge(ImpMeasure, CJ_ImpMeasure, by="id", all.x = TRUE)
+# Normalización
+VarImportance$AccPorPrecentag <- VarImportance$AccImportance / sum(VarImportance$Overall)
+# Selección de las variables que conserven el 90% de la importancia de las variables
+VarImportance[VarImportance$AccPorPrecentag <= 0.9, c('Vars', 'AccPorPrecentag')]
+# representación gráfica
+plot(vImp, top =26)
+```
+
+Por tanto, eliminamos las variables raza y país de procedencia, ya que tienen una importancia residual en la disminución de la impureza. Además, eliminamos la variable fnlwgt por no tener interpretabilidad y la variable education.num, por ser una representación de la variable categórica y, por lo tanto, redundante. 
+
+
+```{r}
+# Eliminación de las variables redundantes o con ninguna capacidad predictiva
+census$education.num <- NULL
+census$race <- NULL
+census$native.country <- NULL
+census$fnlwgt <- NULL
+```
+
+
+
+# Fusión de las categorías no significativas
+
+Antes de proceder al entrenamiento de los algoritmos, haremos uso de las técnicas de clusterización mediante el uso de los árboles CHAID y CART, tal y como se ha mencionado anteriormente, para el tratamiento de los niveles de cada variable factorial y de las variables continuas, respectivamente. El objetivo es reflejar en la base de datos los patrones detectados, resumiendo la información mediante el uso de principios estadísticos rigurosos y la eliminación, mediante el fusionado, de las categorías poco significativas. Para detectarlas, haremos uso del estadístico de Wald, implementado dentro de la familia de modelos generalizados, en particular, los de la familia binomial. Además, se comprobará con el estadístico de Wald que las categorías creadas son estadísticamente significativas.
+
+
+## Education
+
+```{r}
+glm.model.education <- glm(y ~ education, family="binomial", data = census)
+summary(glm.model.education)
+```
+
+
+```{r}
+chaid.model <- chaid(y ~ education, data=census)
+chaid.model
+```
+
+Fusión de las categorías:
+
+```{r}
+census <- census %>% mutate(education = case_when(education == "1st-4th" ~ "Elemtary-education",
+                                                  education == "5th-6th" ~ "Elemtary-education",
+                                                  education == "7th-8th" ~ "Elemtary-education",
+                                                  education == "9th" ~ "Elemtary-education",
+                                                  education == "Preschool" ~ "Elemtary-education",
+                                                  education == "10th" ~ "Elemtary-education",
+                                                  education == "11th" ~ "Elemtary-education",
+                                                  education == "12th" ~ "Elemtary-education",
+                                                  education == "Assoc-acdm" ~ "Associate-degree",
+                                                  education == "Assoc-voc" ~ "Associate-degree",
+                                                  TRUE ~ as.character(education)) )
+census$education <- as.factor(census$education)
+
+
+glm.model.education <- glm(y ~ education, family="binomial", data = census)
+summary(glm.model.education)
+```
+
+## Marital status
+
+```{r}
+glm.model.marital.status <- glm(y ~ marital.status, family="binomial", data = census)
+summary(glm.model.marital.status)
+```
+
+```{r}
+chaid.model <- chaid(y ~ marital.status, data=census)
+chaid.model
+```
+
+```{r}
+census <- census %>% mutate(marital.status = case_when(marital.status == "Married-AF-spouse" ~ "Married-AF-or-civ",
+                                                       marital.status == "Married-civ-spouse" ~ "Married-AF-or-civ",
+                                                       marital.status == "Married-spouse-absent" ~ "Spouse-absent-Widowed",
+                                                       marital.status == "Widowed" ~ "Spouse-absent-Widowed",
+                                                       TRUE ~ as.character(marital.status)) )
+census$marital.status <- as.factor(census$marital.status)
+
+
+glm.model.marital.status <- glm(y ~ marital.status, family="binomial", data = census)
+summary(glm.model.marital.status)
+```
+
+
+## Relationship
+
+En el caso de la relación, todas las categorías sonsignificativas y no dan pie a la fusión de las mismas.
+
+```{r}
+glm.relationship <- glm(y ~ relationship, family="binomial", data = census)
+summary(glm.relationship)
+
+
+chaid.model <- chaid(y ~ relationship, data=census)
+chaid.model
+```
+
+## Occupation
+
+```{r}
+glm.occupation<- glm(y ~ occupation, family="binomial", data = census)
+summary(glm.occupation)
+```
+
+```{r}
+chaid.occupation <- chaid(y ~ occupation, data=census)
+chaid.occupation
+```
+
+
+```{r}
+census <- census %>% mutate(occupation = case_when(occupation == "Armed-Forces" ~ "Armed-Forces-Protective-serv",
+                                                   occupation == "Protective-serv" ~ "Armed-Forces-Protective-serv",
+                                                   occupation == "Exec-managerial" ~ "Exec-managerial-Machine-op-inspct",
+                                                   occupation == "Machine-op-inspct" ~ "Exec-managerial-Machine-op-inspct",
+                                                  TRUE ~ as.character(occupation))
+                        )
+census$occupation <- as.factor(census$occupation)
+
+glm.occupation<- glm(y ~ occupation, family="binomial", data = census)
+summary(glm.occupation)
+```
+
+
+# workclass
+
+```{r}
+glm.workclass <- glm(y ~ workclass, family="binomial", data = census)
+summary(glm.workclass)
+
+
+chaid.workclass <- chaid(y ~ workclass, data=census)
+chaid.workclass
+
+
+census <- census %>% mutate(workclass = case_when(workclass == "Never-worked" ~ "Never-worked-No-Pay",
+                                                  workclass == "Without-pay" ~ "Never-worked-No-Pay",
+                                                  TRUE ~ as.character(workclass))
+                        )
+census$workclass <- as.factor(census$workclass)
+
+
+glm.workclass <- glm(y ~ workclass, family="binomial", data = census)
+summary(glm.workclass)
+```
+
+## capital.gain
+
+Como se intuía en el análisis gráfico, existe un punto de corte relevante, que discrimina muy bien las clases, por lo que incorporamos este conocimiento en la representación de la base de datos.
+
+```{r}
+# Cálculo del punto de corte óptim usando el algoritmo CART
+model.rpart <- rpart(y ~ capital.gain, data=census, method = "class")
+model.rpart
+
+census <- census %>% mutate(capital.gain.f = case_when(capital.gain >= 5119 ~ "HighCapitalGain",
+                                                       capital.gain < 5119  ~ "ModerateCapitalGain") 
+                        )
+census$capital.gain.f <- as.factor(census$capital.gain.f)
+
+# Validación de los nuevos factores
+glm.capital.gain <- glm(y ~ capital.gain.f, family="binomial", data = census)
+summary(glm.capital.gain)
+```
+
+
+```{r}
+census$capital.gain <- census$capital.gain.f
+census$capital.gain.f <- NULL
+```
+
+
+## capital.loss
+
+Se muestra los cortes óptimos hallados por el árbol CART. Aunque existe la posibilidad de discretizar la variable, no lo vamos a hacer, ya que en este caso no están tan claros los puntos de corte óptimos y, por lo tanto, delegaremos la tarea en los distintos algoritmos. 
+
+```{r}
+# Cálculo del punto de corte óptim usando el algoritmo CART
+model.rpart <- rpart(y ~ capital.loss, data=census, method = "class")
+model.rpart
+```
+
+# Discretización de variables y equilibrado de la muestra
+
+Si observamos los resultados del modelo random forest entrenado para la selección de variables:
+
+```{r}
+rf_sv.fit
+```
+
+Observamos que se da una predicción notablemente mejor en la clase mayoritaria, ilustrando el problema de desbalanceo en los problemas de clasificación, en los la clase minoritaría se ve perjudicada. En este caso particular, el efecto es muy evidente, siendo las predicciones sobre la clase minoritaría cercanas a las que daría un predictor totalmente aleatorio. Así, se hace evidente la necesidad de balancear las clases de cara al entrenamiento de los algoritmos. Igualmente, codificamos los niveles de las variables vategóricas en variables dummy. 
+
+```{r}
+#  introducción de variables dummy: una variable por cada nivel de cada factor
+census.numeric <- dummy.data.frame(census[, c('education', 'marital.status', 'occupation', 'relationship', 'sex', 'capital.gain', 'capital.loss', 'workclass')])
+# Añadimos las variables continuas
+census.numeric$UnploymentRatio <- census$UnploymentRatio
+census.numeric$age <- census$age
+census.numeric$hours.per.week <- census$hours.per.week
+census.numeric$y <- census$y
+
+# Cálculo de los parámetros para el método del cubo
+datos_gt50K <- subset(census.numeric, census.numeric$y == "yes")
+datos_lt50K <- subset(census.numeric, census.numeric$y == "no")
+
+nA <- nrow(datos_lt50K)
+nB <- nrow(datos_gt50K)
+
+UNO=rep(1,dim(datos_lt50K)[1])
+
+pik = rep(nB/nA, nA)
+
+X <- datos_lt50K[, names(datos_lt50K) != "y"]
+
+UNO <- rep( 1, dim( datos_lt50K )[ 1 ])
+
+X <- as.matrix( cbind( UNO, X ) )
+
+# Método del cubo
+s=samplecube(X, pik, method=2, order = 1, comment = TRUE)
+
+# Equilibrado de la muestra
+muestra = cbind(datos_lt50K,s)
+muestra1 <- muestra[muestra$s == 1,]
+muestra1$s  <- NULL
+datos_balanceados <- rbind(muestra1,datos_gt50K)
+```
+
+
+# Entrenamiento de los algoritmos
+
+Los algoritmos seleccionados para el entrenamiento son:
+
+  - CART
+  - Random Forest
+  - C5.0
+  - KNN
+  - Redes neunorales
+  - Xgboost
+
+Fundamentalmente, se ha preferido por los algoritmos tipo árbol, ya que favorecen notablemente la interpretación de los modelos. De igual manera, se han elegido algoritmos con otro tipo de estructura interna, con el fin de contrastar la capacidad predictiva, especialmente destacables los de la familia gradient boosting.
+
+
+```{r}
+# Se cambia el nombre de las columnas a un formato compatible con el entrenamiento de los modelos
+colnames(datos_balanceados) <- make.names(colnames(datos_balanceados))
+
+fiveStats = function(...) c (twoClassSummary(...), defaultSummary(...))
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 5, classProbs = TRUE, summaryFunction = fiveStats)
+
+# Creación de datos de entrenamiento y validación
+train.index <- createDataPartition(y = datos_balanceados$y, p= 0.8, list = FALSE)
+data.training <- datos_balanceados[train.index,]
+data.testing <- datos_balanceados[-train.index,]
+```
+
+
+```{r}
+get_model_results <- function(model, data_training, data_testing, plot_param, show_confusionMatrix) {
+  print(paste("#######################################################"))
+  print(paste("Matriz de confusión del modelo:"))
+  print(paste("#######################################################"))
+  print(confusionMatrix(model))
+  if(show_confusionMatrix) {
+    print(paste("#######################################################"))
+    print(paste("Matriz de confusión comparando las predicciones del modelo y los datos de test:"))
+    print(paste("#######################################################"))
+    print(confusionMatrix(predict(model, newdata = data_testing), data_testing$y))
+  }
+  print(paste("#######################################################"))
+  print(paste("Importancia de las variables:"))
+  print(varImp(model))
+  if(plot_param) {
+    print(paste("Gráfico ROC-parámetros:"))
+    plot(model)
+  }
+}
+
+ 
+plot_roc_curve <- function(model, data_training, data_testing ) {
+  print("Curva ROC:")
+  pred_prob_val <- predict(model, data_testing, type="prob")
+  pred_prob_ent <- predict(model, data_training, type="prob")
+  
+  
+  curvaROC_val <- roc(data_testing$y,pred_prob_val[,"yes"])
+  curvaROC_ent <- roc(data_training$y,pred_prob_ent[,"yes"])
+  print(paste("Curva ROC para los datos de entrenamiento:"))
+  print(curvaROC_ent)
+  print(paste("Curva ROC para los datos d validación:"))
+  print(curvaROC_val)
+  
+  plot(curvaROC_ent,col="blue", main="Simulación con la curva ROC del modelo")
+  plot(curvaROC_val, col="red", add=TRUE)
+  legend("bottomright", legend = c("Entrenamiento", "Validacion"), col = c("blue", "red"), lwd = 2)
+} 
+```
+
+
+## CART
+
+
+```{r}
+#set.seed(999)
+#rpartfGrid <-  expand.grid(cp = (0:10)/100)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#rpart.fit <- train(y ~ ., 
+#             data = data.training, 
+#             method = "rpart",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#             tuneGrid = rpartfGrid
+#             )
+#stopImplicitCluster()
+#rpart.fit
+#saveRDS(rpart.fit, file = "rpart.rds")
+
+rpart.fit <- readRDS(file = "rpart.rds")
+get_model_results(rpart.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(rpart.fit, data.training, data.testing)
+```
+
+
+## Redes neuronales
+
+```{r}
+#set.seed(999)
+#nnGrid <-  expand.grid(size = 1:15)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#nn.fit <- train(y ~ ., 
+#             data = data.training, 
+#            method = "mlp",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#             tuneGrid = nnGrid
+#             )
+#stopImplicitCluster()
+#nn.fit
+#saveRDS(nn.fit, file = "nn.fit.rds")
+
+nn.fit <- readRDS(file = "nn.fit.rds")
+get_model_results(nn.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(nn.fit, data.training, data.testing)
+```
+
+
+```{r}
+#set.seed(999)
+#rfGrid <-  expand.grid(mtry  = 1:20)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#rf.fit <- train(y ~ ., 
+#             data = data.training, 
+#             method = "parRF",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#             tuneGrid = rfGrid
+#             )
+#stopImplicitCluster()
+#rf.fit
+#saveRDS(rf.fit, file = "rf.fit.rds")
+
+rf.fit <- readRDS(file = "rf.fit.rds")
+get_model_results(rf.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(rf.fit, data.training, data.testing)
+
+```
+
+
+```{r}
+
+#set.seed(999)
+#knnGrid <-  expand.grid(k  = 2:20)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#knn.fit <- train(y ~ ., 
+#             data = data.training, 
+#             method = "knn",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#             tuneGrid = knnGrid
+#             )
+#stopImplicitCluster()
+#knn.fit
+#saveRDS(knn.fit, file = "knn.fit.rds")
+
+knn.fit <- readRDS(file = "knn.fit.rds")
+get_model_results(knn.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(knn.fit, data.training, data.testing)
+
+```
+
+
+```{r}
+#set.seed(999)
+
+#c5Grid <-  expand.grid(trials = 1:30, 
+#                        model = c("tree", "rules"), 
+#                        winnow = c(TRUE, FALSE))
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#c5_0.fit <- train(y ~ ., 
+#             data = data.training, 
+#             method = "C5.0",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#             tuneGrid = c5Grid
+#             )
+#stopImplicitCluster()
+#c5_0.fit
+#saveRDS(c5_0.fit, file = "c5_0.fit.rds")
+
+c5_0.fit <- readRDS(file = "c5_0.fit.rds")
+get_model_results(c5_0.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(c5_0.fit, data.training, data.testing)
+```
+
+
+```{r}
+#set.seed(999)
+#nrounds <- 1000
+#xbgTreeGrid <-   expand.grid( nrounds = seq(from = 200, to = nrounds, by = 50),
+#                        eta = c(0.025, 0.05, 0.1, 0.3),
+#                        max_depth = c(2, 3, 4, 5, 6),
+#                        gamma = 0,
+#                        colsample_bytree = 1,
+#                        min_child_weight = 1,
+#                        subsample = 1 )
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#xbgTree.fit <- train(y ~ ., 
+#             data = data.training, 
+#             method = "xgbTree",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#             tuneGrid = xbgTreeGrid
+#             )
+#stopImplicitCluster()
+#xbgTree.fit
+#saveRDS(xbgTree.fit, file = "xbgTree.rds")
+
+xbgTree.fit <- readRDS(file = "xbgTree.rds")
+get_model_results(xbgTree.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(xbgTree.fit, data.training, data.testing)
+
+```
+
+
+```{r}
+
+#set.seed(999)
+#nrounds <- 1000
+#xbgTreeGrid1 <- expand.grid( nrounds = seq(from = 50, to = nrounds, by = 50),
+#                      eta = xbgTree.fit$bestTune$eta,
+#                      max_depth = ifelse( xbgTree.fit$bestTune$max_depth == 2,
+#                                          c(xbgTree.fit$bestTune$max_depth:4),
+#                                            xbgTree.fit$bestTune$max_depth - 1:xbgTree.fit$bestTune$max_depth + 1 ),
+#                      gamma = 0,
+#                      colsample_bytree = 1,
+#                      min_child_weight = c(1, 2, 3),
+#                      subsample = 1 )
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#xbgTree1.fit <- train(y ~ ., 
+#             data = data.training, 
+#             method = "xgbTree",
+#             preProc = c("center", "scale"), 
+##             trControl = train.control,
+#             metric = "ROC",
+#             tuneGrid = xbgTreeGrid1
+#             )
+#stopImplicitCluster()
+#xbgTree1.fit
+#saveRDS(xbgTree1.fit, file = "xbgTree1.rds")
+
+xbgTree1.fit <- readRDS(file = "xbgTree1.rds")
+get_model_results(xbgTree1.fit, data.training, data.testing, TRUE, TRUE)
+plot_roc_curve(xbgTree1.fit, data.training, data.testing)
+```
+
+# Comparativa de modelos
+
+```{r}
+modelos <- list(xbgTree=xbgTree.fit, xbgTree1=xbgTree1.fit, rf=rf.fit, knn = knn.fit,  nn = nn.fit, C5.0 = c5_0.fit, rpart = rpart.fit)
+resultados <- resamples(modelos)
+resultados
+summary(resultados)
+dotplot(resultados)
+```
+
+```{r}
+Result <- function ( modelos ){
+  n_modelos = length(modelos)
+  comparativa <- matrix(0, n_modelos, 7)
+  pred <- NULL
+  data_testing <- NULL
+  for (i in 1:n_modelos){
+    if(modelos[[i]]$method == "custom") {
+      data_testing <- data.testing.d
+    }
+    else {
+      data_testing <- data.testing
+    }
+    pred[[i]] <- predict(modelos[i], data_testing, type="prob")
+    comparativa[i,1] = modelos[[i]]$method
+    if (modelos[[i]]$method == "treebag"){
+       comparativa[i,2] = "-"
+       comparativa[i,3] = "-"
+       comparativa[i,4] = "-"
+       comparativa[i,5] = modelos[[i]]$results$Accuracy
+       comparativa[i,6] = modelos[[i]]$results$Kappa
+    }else{
+       comparativa[i,2] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("ROC")]
+       comparativa[i,3] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("Sens")]
+       comparativa[i,4] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("Spec")]
+       comparativa[i,5] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("Accuracy")]
+       comparativa[i,6] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("Kappa")]
+    }
+    comparativa[i,7] = auc(roc(data_testing$y,pred[[i]][[1]][,"yes"]))
+  }
+  colnames(comparativa) <- c("Modelo", "ROC", "Sens", "Spec", "Accuracy", "Kappa", "ROC Validación")
+  return(comparativa)
+}
+
+Result(modelos)
+```
+
+
+# Elección del modelo e interpretación de los resultados
+
+Aunque no se refleja en los datos de entrenamiento, claramente el mejor resultado usando la métrica ROC se consigue con el modelo random forest, y esto queda reflejado en casi un 88% de exactitud del modelo. Random forest combina modelos tipo árbol como el CART mediante métodos de ensemble. Para evaluar la importancia de las variables, se evalúa cómo cada característica reduce la impureza entre los árboles que combina random forest. Por tanto, dan un criterio válido para el objetivo de detectar las métricas más importantes, aunque no de una forma tan nítida como los árboles CART, C50 o CHAID. Aunque la interpretación correcta y profunda de los resultados depende en muchos casos de ojos expertos en la materia, destacamos las métricas más importantes reflejadas por la estructura predictiva del modelo, dando una interpretación, posiblemente subjetiva y a contrastar por juicios más expertos en la materia:
+
+  - Vemos en las primeras posiciones, no sólo del algoritmo seleccionado, sino de casi todos los algoritmos consideran la categoría de estado civil casado con o sin otra familia junto con la condición de cónjuge como uno de los factores más importantes. El patrón subyacente parece indicar un perfil de marido-esposa integrado en una unidad familiar. Por tanto, queda reflejado un primer indicador de los buscasdos. A nivel interpretativo, una posible hipóstesis que explica este fenómeno es que la familia es incentivo de gasto y, por lo tanto, de motor para escalar hacia nuevos niveles salariales, aunque esta hipótesis debería ser más desarrollada, queda fuera de los alcances del presente trabajo y sólo se insinúa a modo de conjetura.
+  
+  - A pesar de que no se ha representado al nivel de granularidad adecuado y que, por lo tanto, no recoge toda la variabilidad posible, el nivel de desempleo por estratos educativos se muestra com otra métrica muy importante. Posiblemente, esto se deba al principio de oferta demanda aplicado al ámbito laboral
+  
+  - Otra métrica que aparece de forma muy clara es la tenencia de capital (capital.gain, capital.loss). De hecho, en el transcurso de la búsqueda de patrones, se detectó un punto de corte significativo en la variable de ganancia de capital, demostrando que este factor es, por sí solo, de vital importancia, pues era capaz de recudir la impureza de manera muy notable. Quizás la interpretación de este factor es más evidente, indicando una actividad de capitalización de bienes (como un alquiler de un piso en propiedad, un almacén, etc).
+  
+  - Igualmente se ven otros factores relevantes, aunque a un nivel de relevancia menor respecto a los primeros mencionados como son el nivel formativo, la clase trabajadora-ocupación y el sexo, pudiendo ésta tener como causa la desigualdad de género a nivel salarial.
+  
+  
+# Conclusiones finales
+
+De esta forma, mediante el tratamiento adecuado de la base de datos, representando los patrones descubiertos en la exploración de datos y la descrpción de la estructura predictiva se ha conseguido el doble objetivo, obtiendo un estimador equilibrado y con una buena capacidad de predicción. Además, describiendo la estrucutura predictiva del modelo seleccionado, se han detectado las métricas más importantes. Éstas pueden ser usadas como entradas pasa otros estudios, incluyendo una nueva iteración del descubrimiento de conocimiento para la base de datos del presente estudio. Como nota final, notar que se ha eliminado la variable fnlwgt por no tener una interpretabilidad clara y por no estar claro que pueda obtenerse este dato para realizarse predicciones. Si se quiere únicamente mejorar la precisión, pueden probarse modelos introduciendo dicha variable. 
+  
+# Referencias bibliográficas
+  
+

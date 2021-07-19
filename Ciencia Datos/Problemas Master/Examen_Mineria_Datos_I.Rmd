@@ -1,0 +1,925 @@
+---
+title: "Examen minería datos I"
+author: "Ricardo Alcañiz Frutos"
+date: "10 de julio de 2019"
+output:
+  html_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Análisis gráfico y resumen de la información
+
+## 1.1. Carga de los datos y estadísticas generales
+
+Cargamos los datos y eliminamos la variable cliente, ya que no va a jugar ningún papel en el análisis. Mostramos las estadísticas generales de las variables.
+
+```{r, warning=FALSE}
+library(caret)
+library(tidyverse)
+library(data.table)
+library(ggpubr)
+library(doParallel)
+library(dummies)
+library(MASS)
+library(Boruta)
+library(sampling)
+library(corrplot)
+library(ROCR)
+library(pROC)
+
+market_data <- read.csv("C:/Users/ricar/OneDrive/Documentos/Examen Minería Datos I/36005534-datos_examen_recuperacion_modulo_5_2019.csv")
+
+market_data$Customer <- NULL
+
+market_data_dt <- as.data.table(market_data)
+
+
+str(market_data_dt)
+summary(market_data_dt)
+dim(market_data_dt)
+
+```
+
+
+## 1.2. Resúmen de la información
+
+Primeramente, creamos una variable auxiliar para los cálculos.
+
+```{r, warning=FALSE}
+
+market_data_dt[, Response_n := ifelse(Response == "Yes",1,0)]
+
+```
+
+## 1.2.1. Influencia de los factores en la variable respuesta
+
+Vamos a valernos de una función a lo largo de todo el apartado, que nos sirva para ver, para cada factor individual, qué capacidad tiene de discriminar las clases. Para ello, se comparan agrupando por el criterio dado por parámetro, qué porcentaje de filas están en una clase tomada como referencia (la clase no, en este caso) respecto al total de la muestra. De esta forma, normalizamos la métrica, no favoreciendo a la clase con más datos.
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response <- function(criteria) {
+ 
+cnt_by_criteria <- merge(market_data_dt[, . (cnt = .N), by = c(criteria, "Response_n")][Response_n == 0],
+                               market_data_dt[, . (cnt = .N), by = c(criteria)],
+                               by=criteria, all.data=TRUE)[, c(criteria, "cnt.x", "cnt.y"), with = FALSE]
+
+names(cnt_by_criteria) <- c(criteria, "cnt_No", "cnt_total")
+
+print(cnt_by_criteria)
+
+ggplot(as.data.frame(cnt_by_criteria), aes_string(x = criteria, y = "cnt_No / cnt_total")) +
+  geom_bar(fill = "#0073C2FF", stat = "identity") +
+  theme_pubclean()
+}
+
+
+```
+
+
+
+## 1.2.1.1. Factor país
+
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("State")
+
+
+```
+
+Como vemos, claramente no existe un estado que muestre diferencias significativas en la respuesta, por lo que esta variable no ayuda mucho a la clasificación de manera individual.
+
+## 1.2.1.2. Factor cobertura
+
+
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("Coverage")
+
+```
+
+
+## 1.2.1.3. Factor educación
+
+
+```{r, warning=FALSE}
+
+
+plot_influence_factor_in_response("Education")
+
+
+```
+
+Vemos que en este caso, sí se presentan diferencias, pero mínimas.
+
+## 1.2.1.4. Factor fecha
+
+Introducimos una nueva variable en el dataset, con el fin de poder ver el impacto de la fecha a un nivel de detalle superior al del día.
+
+
+```{r, warning=FALSE}
+
+market_data_dt$month <- format(as.Date(market_data_dt$Effective.To.Date, format="%m/%d/%y"), '%Y-%m')
+
+plot_influence_factor_in_response("month")
+
+
+```
+
+Igualmente, representamos la información a nivel diario.
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("Effective.To.Date")
+
+```
+
+
+## 1.2.1.5. Factor empleado
+
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("EmploymentStatus")
+
+
+```
+
+Vemos que los clientes desempleados y de baja médica tienen una mayor tendencia a responder positivamente a la campaña.
+
+
+## 1.2.1.6. Factor género
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("Gender")
+
+
+```
+
+EL factor genéro no discrimina en absoluto las clases.
+
+## 1.2.1.7. Factor localización
+
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("Location.Code")
+
+
+```
+
+Se ve una diferencia entre las áreas urbanas y no urbanas, teniendo un mayor impacto en las áreas suburbanas.
+
+
+
+## 1.2.1.8. Factor estado marital
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("Marital.Status")
+
+
+```
+
+
+Como se ve en el gráfico, aprece que este factor sí que tiene cierto efecto, teniendo una mayor tendencia a la contratación aquéllos que están divorciados de los que no.
+
+
+## 1.2.1.9. Factor tipo de póliza
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("Policy.Type")
+
+```
+
+A tenor de los datos, no parece que este factor permita discriminar la variable respuesta.
+
+## 1.2.1.10. Factor póliza
+
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("Policy")
+
+```
+
+Las pólizas especiales parecen tener un comportamiento distinto en cuando a la variabe respuesta.
+
+
+## 1.2.1.11. Factor tipo oferta de renovación
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("Renew.Offer.Type")
+
+
+```
+
+
+## 1.2.1.12. Factor canal venta
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("Sales.Channel")
+
+
+```
+
+El factor agente parece tener una mejor respuesta que los otros canales.
+
+## 1.2.1.13. Factor clase vehículo
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("Vehicle.Class")
+
+
+```
+
+Este factor parece ser más significativo respecto a la discriminación de la variable respuesta.
+
+
+## 1.2.1.14. Factor tamaño vehículo
+
+```{r, warning=FALSE}
+
+plot_influence_factor_in_response("Vehicle.Size")
+
+
+```
+
+La aceptación suele ser más positiva cuanto más grande es el coche.
+
+## 1.3. Primer análisis gráfico de la separabilidad
+
+Realizamos igualmente un primer análisis básico a nivel gráfico, tomando algunos de las variables predictoras para ver si se observa una separación de las clases bajo algún par de variables.
+
+```{r, warning=FALSE}
+
+featurePlot(x = market_data_dt[, .(Policy, Policy.Type, Number.of.Policies, Number.of.Open.Complaints,
+                Coverage, EmploymentStatus, Education, Gender, Marital.Status,Vehicle.Class, Vehicle.Size,
+                Income)],
+              market_data_dt[, -3],
+            y = market_data_dt$Response, 
+            plot = "pairs",
+            auto.key = list(columns = 3))
+
+```
+
+
+A la vista de los resultados, no parece haber dos criterios que permitan separar las clases, al menos linealmente. Volveremos más adelante al análisis gráfico.
+
+## 2. Preprocesado de datos
+
+Aplicamos en este apartado las primeras fases del proprocesado de datos:
+  
+  - Estudio e imputación de los valores faltantes
+  - Transformación de las variables continuas sesgadas y normalización de variables
+  - Estudio de valores atípicos
+  - Transformación de los factores mediante adición de variables dummy
+  - Segundo estudio gráfico mediante PCA y LDA de la separabilidad
+  - Estudio de la correlación de variables y primera reducción de la dimensionalidad
+  - Estudio de los predictores con variabilidad casi nula
+  - Aplicación del algoritmo boruta (wrapper) basado en random forest para selección de variables
+
+
+## 2.1. Estudio e imputación de los valores faltantes
+
+
+```{r, warning=FALSE}
+
+n_valores_faltantes <- nrow(na.omit(market_data_dt, invert=TRUE))
+total_valores <- nrow(market_data_dt)
+n_valores_faltantes
+
+
+```
+
+No existen datos faltantes, por lo que no hay que hacer nada en este apartado.
+
+
+## 2.2. Transformación de las variables continuas sesgadas y normalización de variables
+
+
+Existen varios motivos para tratar las variables que presentan una fuerte asimetría:
+
+  - Bajo la hipóstesis de normalidad (caso de perfecta simetría), los algoritmos suelen funcionar mejor
+  - Algunos algoritmos, como PCA o LDA, pueden verse perjudicados bajo la presencia de fuertes asimetrías
+  - Pueden dar lugar a confusión en la detección de valores atípicos
+  
+Por estas razones, vamos a abordar la transformación de aquéllas variables que presenten este problema, realizando igualmente la normalización de las variables:
+
+
+
+```{r, warning=FALSE}
+
+transformation <- preProcess(market_data_dt,method = c("BoxCox", "center", "scale"))
+normalized_data <- predict(transformation, market_data_dt)
+
+
+```
+
+Eliminamos la variable auxiliar que habíamos usado para la exploración de los datos Response_n y la variable Customer que no tiene ningúin papel en el análisis. Además, sustituímos la variable Effective.To.Date a nivel diiario por la variable month que resume la información en dos niveles. 
+
+```{r, warning=FALSE}
+
+normalized_data[, Response_n:=NULL]
+normalized_data[, Customer:=NULL]
+normalized_data[, Effective.To.Date:=NULL]
+
+```
+
+
+## 2.3. Estudio de los valores atípicos
+
+Haremos un análisis unidimensional de los valores atípicos sobre las variables numéricas del dataset. La siguiente función, dado un data table y un conjunto de columnas del dataset, las recorre mostrando el diagrama de caja bigote y el número de valores atípicos.
+
+```{r, warning=FALSE}
+
+
+show_outlier <- function(dt, var_vector) {
+  #temp <- quote(Income) 
+  for(var in var_vector) {
+    data <- dt[, eval(var)]
+    print(paste("Diagrama de caja bogotes para variable", var))
+    boxplot(data)
+    print(paste("Número de valores atípicos", length(boxplot.stats(data)$out)))
+  }
+}
+
+show_outlier(normalized_data, c(quote(Income),
+                                quote(Customer.Lifetime.Value),
+                                quote(Monthly.Premium.Auto),
+                                quote(Months.Since.Last.Claim),
+                                quote(Months.Since.Policy.Inception),
+                                quote(Number.of.Open.Complaints),
+                                quote(Total.Claim.Amount)
+                               )
+             )
+
+```
+
+Se presentan valores atípicos en tres variables:
+
+   - Number.of.Open.Complaints
+   - Total.Claim.Amount
+   - Customer.Lifetime.Value
+   
+En algunos casos, los valores atípicos pueden venir de errores (por ejemplo, una mala calibración en un sensor o datos erróneos introducios manualmente). En otras, como parece en este caso, responden a casuísticas de negocio. Valores atípicamente altos en en tiempo de vida del cliente, o que presenten un número muy elevado sobre la media que quejas o cantidades requeridas a la compañía atípicamente bajas o altas respecto del nivel medio son escenarios perfectamente válidos de negocio. Por lo tanto, no vamos a eliminar estos valores atípicos en este caso particular, ya que no parecen responder a un error en los datos.
+
+
+## 2.4. Transformación de los factores mediante adición de variables dummy
+
+Con el objetivo de poder manipular los factores a nivel analítico, introducimos variables dummy o indicadores. La transformación consiste en añadir una variable por cada factor y nivel, teniendo un indicador de cuál es el nivel al que pertenece. De esta manera, podemos aplicar los métodos analíticos (como PCA, análisis de correlaciones, etc).
+
+
+```{r, warning=FALSE}
+
+transformed_dt <- dummy.data.frame(normalized_data[, -3])
+
+transformed_dt$Response <- normalized_data$Response
+
+```
+
+
+## 2.5. Segundo estudio gráfico y mediante LDA de la separabilidad
+
+Tras la transformación de las variables factoriales en numéricas, vamos a estudiar de nuevo gráficamente la separabilidad del conjunto, realizando previamente una transformación lineal de las variables originales (PCA, LDA). De esta forma, podremos tener una primera idea intuitiva más clara de si el conjunto es o no linealmente separable y, por lo tanto, qué tipo de técnicas son más adecuadas tanto para la selección de características como la elección de los algoritmos a entrenar.
+
+
+
+## 2.5.1. Estudio gráfico de la separabilidad mediante análisis de componentes principales
+
+El método PCA consiste en la transformación de las variables originales en una nuevas variables incorreladas, mediante una transformación ortonormal que permite conservar la varianza de las variables originales. Por lo tanto, a priori no tienen por qué conservar la separabilidad del dataset. Sin embargo, a nivel exploratorio, sí que puede ser interesante realizar el estudio gráfico sobre las primeras componentes principales, las que llevan el mayor peso de la varianza, pues pueden dar una idea del patrón que hay subyacente a los datos.
+
+```{r, warning=FALSE}
+
+pca <- prcomp(transformed_dt[, names(transformed_dt) != "Response"], scale = TRUE)
+
+scores <- as.data.table(predict(pca))
+scores$response <- transformed_dt$Response
+
+featurePlot(x = scores[, .(PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC8,PC9, PC10)], 
+            y = scores$response, 
+            plot = "pairs",
+            auto.key = list(columns = 3))
+
+
+```
+
+Observamos un fenómeno similar al que obtuvimos al realizar el primer análisis gráfico, no siendo posible obtener una proyección que nos permita separar los datos.
+
+## 2.5.2. Estudio de la separabildiad mediante LDA
+
+La idea que hay detrás del método LDA (Linear Discriminant analisys) es buscar un espacio de dimensión menor (particularmente un hiperplano), que maximize la varianza entre grupos y minimice la varianza intra grupos. Es decir, se busca un hiperplano donde la separación entre las variables sea lo mayor posible, mediante una aplicación lineal (una proyección concretamente). A diferencia del PCA, este método sí conserva, si el dataset es linealmente separable, la separabilidad entre las clases. 
+
+
+```{r, warning=FALSE}
+
+
+lda <- lda(Response ~ ., 
+           data=transformed_dt)
+
+plot(lda, panel = panel.lda, cex = 0.7, dimen = 1, abbrev = FALSE, type ="density")
+
+plot(lda, panel = panel.lda, cex = 0.7, dimen = 1, abbrev = FALSE, type ="histogram")
+
+
+
+```
+
+Vemos, sin embargo, que las clases están muy contaminadas. Por tanto, no es una buena idea, con vistas a la selección de variables, emplear ninguno de los métodos lineales (PCA, LDA, o PLDSA).
+
+## 2.6. Estudio de la correlación de variables y primera reducción de la dimensionalidad
+
+Estudiamos gráficamente la correlación entre las variables, clusterizando aquéllos grupos de variables que guarden una alta correlación entre sí (con la opción 'hclust'). Igualmente, mediante el algoritmo findcorrelation, seleccionamos aquéllas variables que tengan una correlación superior a 0.9 (prácticamente el caso en que las variables son coliniales y que, por lo tanto, muestra una clara redundancia). Para cada par de variables con correlación superior a la especificada en el parámetro, el algoritmo selecciona la que tenga una mayor correlación media con el resto de variables.
+
+Matriz de correlaciones clusterizada:
+
+```{r, warning=FALSE}
+
+correlations <- cor(transformed_dt[, names(transformed_dt) != "Response"])
+corrplot(correlations, order = "hclust")
+
+```
+
+
+Variables seleccionadas por el algoritmo:
+
+```{r, warning=FALSE}
+
+
+highCorr <- findCorrelation(correlations, cutoff = .90)
+colnames(transformed_dt[highCorr])
+#transformed_dt <- transformed_dt[-highCorr]
+
+
+```
+
+De momento, no eliminamos las variables.
+
+## 2.7. Estudio de los predictores con variabilidad casi nula
+
+Estudiamos la existencia de variables con varianza (casi) nula. Se entiende por éstas las variables en las que: 
+
+  - Existe un gran ratio entre el mayor valor y el segundo mayor valor
+  - Tienen un único valor no nulo y el porcentaje del valor no nulo es muy pequeño respecto al tamaño de muestra
+  
+Es conveniente detectar y tratar este tipo de variables, ya que pueden afectar negativamente a los algoritmos de predicción. Listamos a continuación las variables (casi) nulas para el dataset.
+
+```{r, warning=FALSE}
+
+colnames(transformed_dt[, nearZeroVar(transformed_dt)])
+
+```
+
+
+En todos estos casos, se nos muestran aquéllos factores que tienen muy poca cantidad de datos con respecto al total de la muestra. Pero, como hemos visto en la fase de preprocesado, muchas de estas características discriman la variable respuesta (aunque muy débilmente) y, por lo tanto, no es buena idea eliminarlas en una primera instancia. 
+
+# 2.8. Aplicación del algoritmo boruta para reducción de la dimensionaldiad y selección de variables
+
+
+Como hemos visto en el análisis gráfico, los algoritmos de selección de variables lineales tales como PCA, LDA, PLDSA, etc no son convenientes para seleccionar las variables predictivas del modelo. Por tanto, hemos optado por tomar uno de la familia wrapper, el método boruta, el cual está basado en el algoritmo de clasificación random forest. Los pasos que sigue el algoritmo son los siguientes:
+
+     - Para cada variable, se crea una variable espejo obtenida a partir de la original reordenando arbitrariamente los valores de las variables. De esta forma, se pretenden conseguir variables con la mínima relación posible con la variable respuesta.
+     - Se ejecuta el random forest incluyendo las variables espejo y se toman las puntuaciones Z (se definen como la distancia, tomando como unidad de medida la varianza de la variable, con respecto a la media)
+     - Tomar la variable con mayor valor espejo y asignar un punto (hit) a aquéllas variables que tenga una puntuación mayor que ésta
+     - Repetir los pasos anterior un número n de iteraciones
+     
+El algoritmo realiza un test en el casos en los que no pueda aplicar el criterio mencionado en el tercer punto, aunque no aplica en este caso particular y, por lo tanto, no describimos dichos pasos. La idea principal es la definición, mediante la creación de la variables espejo, de un criterio para determinar si una variable es importante. Áquellas variables que tengan una puntuación menor que las variables espejo, demuestran no ser importantes en la predicción de la variable respuesta, ya que tienen menos relación con la variable respuesta que variables generadas aleatoriamente y, por lo tanto, se pueden descartar. Así el algoritmo no sólo es capaz de eliminar las variables superfluas sino que también es capaz de cuantificar el peso que tienen en la predicción.
+  
+
+Ejecutamos el algoritmo boruta:
+
+```{r, warning=FALSE}
+
+set.seed(123)
+#boruta_feature_selection <- Boruta(x = trasnformed_dt[, names(trasnformed_dt) != "Response"], y = trasnformed_dt$Response, doTrace = 2)
+
+#saveRDS(boruta_feature_selection, file = "boruta_fs.rds")
+boruta_feature_selection <-  readRDS(file = "boruta_fs.rds")
+
+
+```
+
+
+Gráfico con la importancia de las variables:
+
+```{r, warning=FALSE}
+
+plot(boruta_feature_selection)
+
+s_attr <- getSelectedAttributes(boruta_feature_selection)
+select_attr_ds <- transformed_dt[, s_attr]
+select_attr_ds$Response <- transformed_dt$Response
+
+```
+
+Variables seleccionadas:
+
+```{r, warning=FALSE}
+
+dim(select_attr_ds)
+colnames(select_attr_ds)
+
+```
+
+
+
+# 3. Equilibrado de la muestra
+
+Finalmente, equilibramos la muestra mediante el método del cubo:
+
+
+```{r, warning=FALSE}
+
+datos_no <- subset(select_attr_ds, select_attr_ds$Response == "No")
+datos_si <- subset(select_attr_ds, select_attr_ds$Response == "Yes")
+
+nA <- nrow(datos_no)
+nB <- nrow(datos_si)
+
+UNO=rep(1,dim(datos_no)[1])
+
+pik = rep(nB/nA, nA)
+
+X <- cbind(UNO, dim(datos_no[, names(datos_no) != "Response"])[1])
+
+
+s=samplecube(as.matrix(X), pik, method=2)
+
+
+muestra = cbind(datos_no,s)
+muestra1 <- muestra[muestra$s == 1,]
+muestra1$s  <- NULL
+datos_balanceados <- rbind(muestra1,datos_si)
+
+
+#write.csv2(datos_balanceados, file="C:/Users/ricar/OneDrive/Escritorio/datos_blanceados.csv")
+
+```
+
+
+
+
+# 4 Entrenamiento de los algoritmos
+
+Usaremos las siguientes funciones a lo largo del presente apartado, las cuales resumen la información de los modelos y calculan la curva ROC y la matriz de confución, tanto para los datos de entrenamiento como de test. Además, particionamos los datos devueltos por el método del cubo en datos de muestra y validación.
+
+```{r, warning=FALSE}
+
+set.seed(123)
+train.index <- caret::createDataPartition(y = datos_balanceados$Response, p= 0.8, list = FALSE)
+data.training <- datos_balanceados[train.index,]
+data.testing <- datos_balanceados[-train.index,]
+
+
+
+get_model_results <- function(model, plot_param, show_confusionMatrix) {
+  print(paste("Resultados para cada uno de los parámetros de la malla:"))
+  print(model)
+  print(paste("#######################################################"))
+  print(paste("Matriz de confusión del modelo:"))
+  print(paste("#######################################################"))
+  print(confusionMatrix(model))
+  if(show_confusionMatrix) {
+    print(paste("#######################################################"))
+    print(paste("Matriz de confusión comparando las predicciones del modelo y los datos de test:"))
+    print(paste("#######################################################"))
+    print(confusionMatrix(predict(model, newdata = data.testing), data.testing$Response))
+  }
+  print(paste("#######################################################"))
+  print(paste("Importancia de las variables:"))
+  print(varImp(model))
+  if(plot_param) {
+    print(paste("Gráfico ROC-parámetros:"))
+    plot(model)
+  }
+}
+
+
+plot_roc_curve <- function(model) {
+  print("Cruva ROC:")
+  pred_prob_val <- predict(model, data.testing, type="prob")
+  pred_prob_ent <- predict(model, data.training, type="prob")
+  
+  
+  curvaROC_val <- roc(data.testing$Response,pred_prob_val[,"Yes"])
+  curvaROC_ent <- roc(data.training$Response,pred_prob_ent[,"Yes"])
+  
+  plot(curvaROC_ent,col="blue", main="Simulación con la curva ROC del modelo")
+  plot(curvaROC_val, col="red", add=TRUE)
+  legend("bottomright", legend = c("Entrenamiento", "Validacion"), col = c("blue", "red"), lwd = 2)
+} 
+
+
+
+```
+
+
+Dado que el tamaño de muestra es pequeño (unos 2000 registros), usaremos tamaños para la malla no excesivamente grandes para evitar el sobreajuste. Igualmente, comparamos los datos obtenidos contrastando los datos de entrenamiento y validación.
+
+# 4.1. C5.0
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#fiveStats = function(...) c (twoClassSummary(...), defaultSummary(...))
+#c5Grid <-  expand.grid(trials = 1:20, 
+#                        model = c("tree", "rules"), 
+#                        winnow = c(TRUE, FALSE))
+#train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 5, classProbs = TRUE, summaryFunction = #fiveStats)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#c5_0.fit <- train(Response ~ . , 
+#             data = data.training, 
+#             method = "C5.0",
+#             parms = list(split = "information"),
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#              tuneGrid = c5Grid
+#            )
+#stopImplicitCluster()
+
+#saveRDS(c5_0.fit, file = "c5_0.rds")
+c5_0.fit <- readRDS(file = "c5_0.rds")
+get_model_results(c5_0.fit, TRUE, TRUE)
+plot_roc_curve(c5_0.fit)
+
+
+```
+
+
+# 4.2. Random Forest
+
+
+```{r, warning=FALSE}
+
+#set.seed(123)
+#fiveStats = function(...) c (twoClassSummary(...), defaultSummary(...))
+#RFGrid <-  expand.grid(mtry  = 1:15)
+#train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 5, classProbs = TRUE, summaryFunction = #fiveStats)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#rf.fit <- train(x = data.training[, names(data.training) != "Response"], 
+#             y = data.training$Response, 
+#             method = "parRF",
+#             parms = list(split = "information"),
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#              tuneGrid = RFGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(rf.fit, file = "rf.rds")
+rf.fit <- readRDS(file = "rf.rds")
+get_model_results(rf.fit, TRUE, TRUE)
+plot_roc_curve(rf.fit)
+
+```
+
+# 4.3.1 K vecinos
+
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#fiveStats = function(...) c (twoClassSummary(...), defaultSummary(...))
+#knnGrid <-  expand.grid(k  = 2:15)
+#train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 5, classProbs = TRUE, summaryFunction = #fiveStats)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#knn.fit <- train(Response ~ . , 
+#             data = data.training, 
+#             method = "knn",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#              tuneGrid = knnGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(knn.fit, file = "knn.rds")
+knn.fit <- readRDS(file = "knn.rds")
+get_model_results(knn.fit, TRUE, TRUE)
+plot_roc_curve(knn.fit)
+
+```
+
+# 4.3.2 kernel K vecinos
+
+Aunque este método no se nos ha requerido, he considerado interesante probarlo, ya que usa una función kernel para transformar el espacio original, con lo que podemos intentar una separación no lineal en el espacio transformado.
+
+
+```{r, warning=FALSE}
+
+#set.seed(123)
+#fiveStats = function(...) c (twoClassSummary(...), defaultSummary(...))
+#kknnGrid <- expand.grid(kmax = 1:5,            
+#                        distance = 1:10,        
+#                        kernel = c('gaussian')
+#                        )
+#train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 5, classProbs = TRUE, summaryFunction = #fiveStats)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#kknn.fit <- train(x = data.training[, names(data.training) != "Response"], 
+#             y = data.training$Response, 
+#             method = "kknn",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#              tuneGrid = kknnGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(kknn.fit, file = "kknn.rds")
+kknn.fit <- readRDS(file = "kknn.rds")
+get_model_results(kknn.fit, TRUE, TRUE)
+plot_roc_curve(kknn.fit)
+
+```
+
+Como puede verse a la vista de los resultados, este algoritmo funciona mejor que el k-means, obteniendo una mejor separación del conjunto, tal y como nos indicaban los análisis gráficos.
+
+# 4.4 Redes neuronales
+
+
+```{r, warning=FALSE}
+
+#set.seed(123)
+#fiveStats = function(...) c (twoClassSummary(...), defaultSummary(...))
+#nnGrid <-  expand.grid(size = 1:20)
+#train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 5, classProbs = TRUE, summaryFunction = #fiveStats)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#nn.fit <- train(x = data.training[, names(data.training) != "Response"], 
+#             y = data.training$Response, 
+#             method = "mlp",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#              tuneGrid = nnGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(nn.fit, file = "nn.rds")
+nn.fit <-  readRDS(file = "nn.rds")
+get_model_results(nn.fit, TRUE, TRUE)
+plot_roc_curve(nn.fit)
+
+```
+
+# 4.5. Máquinas de vectores soporte
+
+
+```{r, warning=FALSE}
+
+#set.seed(123)
+#fiveStats = function(...) c (twoClassSummary(...), defaultSummary(...))
+#svmGrid <-  expand.grid(sigma = c(1:20)/40, C = c(.001, .01, .5))
+#train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 5, classProbs = TRUE, summaryFunction = #fiveStats)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#svm.fit <- train(x = data.training[, names(data.training) != "Response"], 
+#             y = data.training$Response, 
+#             method = "svmRadial",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#              tuneGrid = svmGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(svm.fit, file = "svm.rds")
+svm.fit <-  readRDS(file = "svm.rds")
+get_model_results(svm.fit, TRUE, FALSE)
+
+
+```
+
+
+
+# 4.6. Boosting
+
+
+```{r, warning=FALSE}
+
+#set.seed(123)
+#boostGrid <-  expand.grid(nIter = 1:20, method = c("Adaboost.M1", "Real adaboost"))
+#fiveStats = function(...) c (twoClassSummary(...), defaultSummary(...))
+#train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 5, classProbs = TRUE, summaryFunction = #fiveStats)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#adaboost.fit <- train(x = data.training[, names(data.training) != "Response"], 
+#             y = data.training$Response, 
+#             method = "adaboost",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC",
+#              tuneGrid = boostGrid
+#             )
+#stopImplicitCluster()
+
+#saveRDS(adaboost.fit, file = "adaboost.rds")
+adaboost.fit <- readRDS(file = "adaboost.rds")
+get_model_results(adaboost.fit, TRUE, TRUE)
+plot_roc_curve(adaboost.fit)
+
+
+```
+
+
+
+# 4.7. Bagging
+
+
+```{r, warning=FALSE}
+
+
+#set.seed(123)
+#fiveStats = function(...) c (twoClassSummary(...), defaultSummary(...))
+#train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 5, classProbs = TRUE, summaryFunction = #fiveStats)
+#clusterCPU <- registerDoParallel(cores=detectCores() - 1)
+#bag.fit <- train(x = data.training[, names(data.training) != "Response"], 
+#             y = data.training$Response, 
+#             method = "treebag",
+#             preProc = c("center", "scale"), 
+#             trControl = train.control,
+#             metric = "ROC"
+#             #tuneGrid = bagGrid
+#             )
+#stopImplicitCluster()
+
+
+#saveRDS(bag.fit, file = "bag.rds")
+bag.fit <- readRDS(file = "bag.rds")
+get_model_results(bag.fit, FALSE, TRUE)
+plot_roc_curve(bag.fit)
+
+```
+
+# 5. Contraste de modelos
+
+Realizamos la comparación de los distintos modelos.
+
+```{r warning=FALSE}
+# Se excluye bagging
+modelos <- list(C5.0 = c5_0.fit, RF = rf.fit, KNN = knn.fit, KKNN = kknn.fit,MLP = nn.fit, SVM = svm.fit, ADABOOST = adaboost.fit, BAG=bag.fit)
+resultados <- resamples(modelos)
+resultados
+summary(resultados)
+dotplot(resultados)
+diferencias <- diff(resultados)
+summary(diferencias)
+```
+
+
+A tenor de los resultados, los mejores métodos son, en orden (usando como criterios la curva ROC y el índice Kappa):
+
+  1. Máquinas de vectores soporte
+  2. C5.0 y random forest
+  3. Adaboost y Bag
+  4. Redes reuronales y kernel k-means
+  5. k-means
+
+
+## 6. Tablas resumen con las métricas
+
+Por último, mostramos una matriz resumen con todas las métricas, usando la función proporcionada por los profesores:
+
+```{r warning=FALSE}
+
+Result <- function ( modelos ){
+  n_modelos = length(modelos)
+  comparativa <- matrix(0, n_modelos, 7)
+  pred <- NULL
+
+  for (i in 1:n_modelos){
+    pred[[i]] <- predict(modelos[i], data.testing, type="prob")
+    comparativa[i,1] = modelos[[i]]$method
+    if (modelos[[i]]$method == "treebag"){
+       comparativa[i,2] = "-"
+       comparativa[i,3] = "-"
+       comparativa[i,4] = "-"
+       comparativa[i,5] = modelos[[i]]$results$Accuracy
+       comparativa[i,6] = modelos[[i]]$results$Kappa
+    }else{
+       comparativa[i,2] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("ROC")]
+       comparativa[i,3] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("Sens")]
+       comparativa[i,4] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("Spec")]
+       comparativa[i,5] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("Accuracy")]
+       comparativa[i,6] = modelos[[i]]$results[rownames(modelos[[i]]$bestTune), c("Kappa")]
+    }
+    comparativa[i,7] = auc(roc(data.testing$Response,pred[[i]][[1]][,"Yes"]))
+  }
+  colnames(comparativa) <- c("Modelo", "ROC", "Sens", "Spec", "Accuracy", "Kappa", "ROC Validación")
+  return(comparativa)
+}
+
+modelos <- list(C5.0 = c5_0.fit, RF = rf.fit, KNN = knn.fit, KKNN = kknn.fit,MLP = nn.fit, ADABOOST = adaboost.fit, BAG=bag.fit)
+Result(modelos)
+```

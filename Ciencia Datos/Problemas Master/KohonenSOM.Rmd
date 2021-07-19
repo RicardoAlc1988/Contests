@@ -1,0 +1,219 @@
+---
+title: "Kohonen SOM"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install.packages('kohonen')
+#install.packages('factoextra')
+```
+
+## R Markdown
+
+
+```{r}
+library(caret)
+library(e1071)
+library(factoextra) 
+library(kohonen)
+```
+
+
+```{r}
+df <- read.csv(file = 'Data_Cortex_Nuclear.csv', sep = ",")
+summary(df)
+```
+
+
+
+```{r}
+df <- read.csv(file = 'Data_Cortex_Nuclear.csv', sep = ",")
+summary(df)
+```
+
+
+Número de nulos por columna:
+
+```{r}
+sapply(df, function(x) sum(is.na(x)))
+```
+
+Eliminamos las variables con un porcentaje de nulos superior al 10%.
+
+```{r}
+df$BAD_N <- NULL
+df$BCL2_N <- NULL
+df$H3AcK18_N <- NULL
+df$H3MeK4_N  <- NULL
+```
+
+Imputamos los valores faltantes con la media:
+
+
+```{r}
+for (col in colnames(df)[colSums(is.na(df)) > 0]) {
+    df[is.na(df[, c(col)]), c(col)] <- mean(df[!is.na(df[, c(col)]), c(col)])
+}
+```
+
+
+
+
+```{r}
+set.seed(123)
+
+df.training <- as.matrix(scale(df[,  !names(df) %in% c('MouseID', 'Genotype', 'Treatment', 'Behavior', 'class')]))
+df.labels <- as.factor(df[, c('class')])
+```
+
+
+```{r}
+#som.training.results <- data.frame(distance=double(), x.grid.size=double(), y.grid.size=double(), radius.size=double(), topology=character(), stringsAsFactors=TRUE)
+#colnames(som.training.results) <- c('distance', 'x.grid.size', 'y.grid.size', 'radius.size', 'topology')
+
+# Configuración de la malla
+#x.gSize <- seq(10, 15, by = 1)
+#y.gSize <- seq(10, 15, by = 1)
+#rSize <- seq(0.5, 1.5, by = 0.1)
+#topology  <- c('rectangular', 'hexagonal')
+
+# Búsqueda del mejor resultado
+#for(xgs in y.gSize) {
+#  for (ygs in x.gSize) {
+      # No se computan soluciones simétricas
+#      if(ygs >= xgs) {
+#        for(rs in rSize) {
+#          for(topo in topology) {
+#            som.grid <- somgrid(xdim = xgs, ydim = ygs, topo = topo)
+#            som.model <- som(df.training, som.grid, rlen = 700, radius = rs, keep.data = TRUE, dist.fcts = "euclidean")
+#            actual.distance <- mean(som.model$distances)
+#            print(paste('Distancia media de', actual.distance, 'con tamaño de grid:', xgs, ',', ygs, 'y tamaño de radio', rs, 'y topología:', topo))
+#            som.training.results = rbind(som.training.results, c(actual.distance, xgs, ygs, rs, topo))
+#        }
+#      }
+#    }
+#  }
+#}
+```
+
+
+```{r}
+#colnames(som.training.results) <- c('distance', 'x.grid.size', 'y.grid.size', 'radius.size', 'topology')
+#path = '/content/gdrive/MyDrive/ModelosSOM/som_best_results.csv'
+#write.csv(som.training.results,path, row.names = FALSE)
+#saveRDS(som.training.results, file=path)
+```
+
+
+```{r}
+som.training.results <- read.csv(file = 'som_best_results.csv', sep = ",")
+head(som.training.results, 10)
+```
+
+
+
+
+
+```{r}
+set.seed(123)
+som.grid <- somgrid(xdim = 10, ydim = 12, topo = "rectangular")
+som.model <- som(df.training, som.grid, rlen = 50, radius = 1.5, keep.data = TRUE, dist.fcts = "euclidean")
+summary(som.model)
+plot(som.model, type="changes")
+```
+
+
+Calidad en la representación:
+
+```{r}
+plot(som.model, type = "counts")
+nb <- table(som.model$unit.classif)
+nb
+
+plot(som.model,type="dist.neighbours")
+```
+
+```{r}
+fviz_nbclust(som.model$codes[[1]], kmeans, method = "wss")
+```
+```{r}
+## use hierarchical clustering to cluster the codebook vectors
+set.seed(123)
+som.cluster <- kmeans(som.model$codes[[1]], 8)
+# plot these results:
+#som.cluster
+fviz_cluster(som.cluster, data = som.model$codes[[1]], geom = c("point"),ellipse.type = "euclid")
+```
+
+```{r}
+## use hierarchical clustering to cluster the codebook vectors
+plot(som.model,type="mapping",bgcol=c("red","yellow", 'blue', 'steelblue1', 'white', 'orange', 'orange', 'purple')[som.cluster$cluster])
+add.cluster.boundaries(som.model,clustering=som.cluster$cluster)
+```
+
+```{r}
+## use hierarchical clustering to cluster the codebook vectors
+plot(som.model,type="codes",codeRendering = "segments", bgcol = rainbow(5)[som.cluster$cluster], main = "Cluster Map")
+add.cluster.boundaries(som.model, som.cluster$cluster)
+```
+
+
+```{r}
+## use hierarchical clustering to cluster the codebook vectors
+set.seed(123)
+
+
+df.ssom <- df[,  !names(df) %in% c('MouseID', 'Genotype', 'Treatment', 'Behavior')]
+index <- sample(nrow(df.ssom), nrow(df.ssom)*0.8)
+
+
+
+df.train <- scale(df.ssom[index, !names(df.ssom) %in% c('class')])
+df.test <- scale(df.ssom[-index, !names(df.ssom) %in% c('class')],
+                 center = attr(df.train, "scaled:center"),
+                 scale = attr(df.train, "scaled:scale"))
+
+
+
+# make label
+train.label <- as.factor(df.ssom[index, names(df.ssom) %in% c('class')])
+test.label <-  as.factor(df.ssom[-index, names(df.ssom) %in% c('class')])
+
+
+```
+
+
+
+```{r}
+## use hierarchical clustering to cluster the codebook vectors
+
+set.seed(100)
+sup.som.model <- xyf(df.train, train.label, som.grid, rlen = 500)
+plot(sup.som.model, type = "changes")
+
+```
+
+
+```{r}
+## use hierarchical clustering to cluster the codebook vectors
+
+#install.packages('e1071')
+
+test.response <- list(independent = df.test, dependent = test.label)
+
+pred <- predict(sup.som.model, newdata = df.test, whatmap = 1)
+table(Predict = pred$predictions[[2]], Actual = test.label)
+
+#auc(as.factor(pred$predictions[[2]]), as.factor(test.label))
+
+confusionMatrix(as.factor(pred$predictions[[2]]), test.label)
+
+```
+```{r}
+c.class <- kmeans(sup.som.model$codes[[2]], 8)
+par(mfrow = c(1,2))
+plot(sup.som.model, type = "codes", main = c("Unsupervised SOM", "Supervised SOM"), 
+     bgcol = rainbow(3)[c.class$cluster])
+add.cluster.boundaries(sup.som.model, c.class$cluster)
+```

@@ -1,0 +1,463 @@
+---
+title: "Examen Series Temporales"
+author: "Ricardo Alcañiz Frutos"
+date: "14/06/2020"
+output: html_document
+html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+        collapsed: true
+        smooth_scroll: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Primera parte
+
+## Apartado 1
+
+Lectura del fichero de mobilidad de la ciudad de Nueva York.
+
+```{r, warning=FALSE}
+suppressPackageStartupMessages(library(descomponer))
+suppressPackageStartupMessages(library(forecast))
+suppressPackageStartupMessages(library(ggfortify))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(RJDemetra))
+suppressPackageStartupMessages(library(tseries))
+suppressPackageStartupMessages(library(zoo))
+
+
+ny.mobility <- read.csv("41743097-raw_ny_D.csv")
+```
+
+Mostramos los 10 primeros y últimos registros.
+
+```{r}
+# 10 primeros registos
+head(ny.mobility, 10)
+
+# 10 últimos registros
+tail(ny.mobility, 10)
+```
+
+
+Graficamos la serie temporal.
+
+
+```{r}
+# Creamos un objeto ts con los datos ya ordenados temporalmente
+ts.ny.mobility <- ts(ny.mobility$index, start = c(2020, 01), frequency = 365)
+autoplot(ts.ny.mobility, ts.colour = "blue")
+```
+
+La serie muestra dos tramos bien distinguidos:
+
+    - La primera parte de la serie muestra una tendencia poco cambiante y un comportamiento cíclico semanal, disminuyendo los fines de semana
+    - A medidados de Marzo, la tendencia decrece muy rápida y abruptamente hasta estabilizarse de nuevo, en el cual vuelven a aparecer de manera más clara cliclos semanales, aunque con picos más bajos, lo indica una menor movilidad semanal.
+    
+    
+## Apartado 2
+
+### Método de la bisección para la búsqueda de parámetros óptimos
+
+Basándonos en las ideas de la demostración de Weierestrass, vamos a aplicar el método de la bisección para la búsqueda de parámetros óptimos. Por fijar ideas, supongamos que trabajamos con el modelo kernel smooth y queremos encontrar el h óptimo de ajuste a la curva de datos, evitando el sobreajuste. Para ello, partamos de una intervalo $[a,b]$ de tal manera de que el modelo para el parámetro $b$ no produzca sobreajuste, pero sí para $a$ y sea $c$ el punto intermedio de $[a, b]$. Es claro que si para $c$ el método muestra un sobreajuste, también lo hará para todo el intervalo $[a, c]$, con lo que podemos descatar éste como candidato a solución y buscar en el intervalo [c,b]. Por contra, si para c no hay sobreajuste, podemos partir del parámetro $c$ más pequeño que $b$ y, por tanto, con mejor ajuste global esperado sin que se produzca sobreajuste y plantear la problemática inicial para el intervalo $[a, c]$. Así, en un número logarítimico de pasos, estaremos cerca del ajuste óptimo. Estas ideas valen también para los splines, con el parámetro spar en R. Por lo tanto, en vez de buscar en una malla (listado, grid, etc), en este caso se puede aplicar un método más fino y así lo haremos en los siguientes apartados. La problemática del algoritmo es cómo determinar si para un parámetro $c$ dado existe sobreajuste. En caso de poder separar la muestra en validación y test, se puede considerar que se da un sobreajuste si se tiene un buen ajuste en los datos de entrenamiento, pero no así en los de test. Sin embargo, esto presupone tener un número más o menos grande de datos como para realizar esa separación, cosa que no se da aquí. Por lo tanto, el criterio para determinar si hay sobreajuste será gráfico y la decisión no será automática, sino que será del investigador. Evidentemente, esto introduce un cierto caracter subjetivo, pero aun así el método es aplicable y nos va a servir para mejorar las soluciones, partiendo de un intervalo $[a, b]$ como el descrito anteriormente.
+
+### Método de suavizado con medias móviles
+
+Dado que la serie muestra un crecimiento cíclico semanal a lo largo de la serie, es de esperar que un alisado con $n=7$ elimine el efecto cíclico de la serie y muestre la tendencia de una manera más clara. En este caso, no se tiene media cero o constante, por lo que el método no sirve para realizar predicciones, pero sí describe muy bien la evolución de la tendencia.
+
+```{r}
+# Eliminación de la variabilidad cíclica alrededor de la tendencia
+plot(ts.ny.mobility, main='Mobilidad New York', xlab='Día', ylab='Porcentaje', col = "blue")
+lines(rollmean(ts.ny.mobility, 7), col="red", lwd=2)
+legend("bottomleft", c("Original", "Media móvil centrada"),
+   lwd=c(1,2,2), col=c("black", "red"))
+grid()
+```
+
+### Método de suavizado con kernel-smooth
+
+Primeramente, se definen las funcions auxiliares para mostrar los resultados:
+
+```{r}
+# ts: serie temporal
+# h parámetro suavizado kernel smooth
+show_ksmooth_results <- function(ts, h) {
+    t.kernel <- ksmooth(time(ts), ts, "normal", bandwidth = h)
+    plot(ts, main='Mobilidad New York', xlab='Día', ylab='Porcentaje',col = "blue")
+    lines(t.kernel, col = 2)
+    legend("bottomleft", c("Original", "Kernel smooth"),
+    lwd=c(1,2,2), col=c("black", "red"))
+    grid()
+    # Cálculo del sse
+    sse <- sum((t.kernel$y - ts)^2)
+    ecm <- sse / length(ts)
+    print(paste("Suma errores cuadrado: ", round(sse, 2)))
+    print(paste("Error cuadrático medio: ", round(ecm, 2)))
+}
+
+# ts: serie temporal
+# spar parámetro suavizado smooth spline
+show_smspline_results <- function(ts, spar) {
+    sp <- smooth.spline(ts, spar = spar) 
+    plot(ts, main='Mobilidad New York', xlab='Día', ylab='Porcentaje', col = "blue")
+    lines(sp, col="red", lwd=2)
+    legend("bottomleft", c("Original", "Smooth spline"),
+    lwd=c(1,2,2), col=c("black", "red"))
+    grid()
+    sse <- sum((sp$y - ts)^2)
+    ecm <- sse / length(ts)
+    print(paste("Suma errores cuadrado: ", round(sse, 2)))
+    print(paste("Error cuadrático medio: ", round(ecm, 2)))
+}
+```
+
+
+Puesto que el método lo vamos a implementar de una manera manual, es conveniente partir de un intervalo de longitud muy pequeña, en donde sea ya difícil intuir de manera intuitiva qué elección del parámetro realizar. 
+
+#### Paso 1
+
+$[a, b] = [0.001, 0.03]$, $c = 0.015$
+
+
+```{r}
+h <- 0.015
+show_ksmooth_results(ts.ny.mobility, h)
+```
+
+No existe sobreajuste, con lo que se hace $b=c$.
+
+
+#### Paso 2
+
+$[a, b] = [0.001, 0.015]$, $c = 0.008$
+
+
+```{r}
+h <- 0.008
+show_ksmooth_results(ts.ny.mobility, h)
+```
+
+No existe sobreajuste, con lo que se hace $b=c$.
+
+#### Paso 3
+
+$[a, b] = [0.001, 0.008]$, $c = 0.0045$
+
+```{r}
+h <- 0.0045
+show_ksmooth_results(ts.ny.mobility, h)
+```
+
+Existe sobreajuste, por lo que $c=a$.
+
+#### Paso 4
+
+$[a, b] = [0.0045, 0.008]$, $c = 0.0062$
+
+
+```{r}
+h <- 0.0062
+show_ksmooth_results(ts.ny.mobility, h)
+```
+
+Esta solución parece no presentar sobreajuste y ha mejorado notablemente la solución inicial de partida.
+
+
+### Método de suavizado con smooth-spline
+
+
+Aunque la función smooth spline permite hallar una solución mediante CV, ésta parece presentar sobreajuste y, por lo tanto, aplicaremos unos pocos pasos del método de la bisección para encontrar una solución cercana a la óptima, evitando sobreajuste. Partimos del intervalo $[a, b] = [0.1, 0.5]$ donde en $a$ se produce sobreajuste y no así en $b$
+
+
+#### Paso 1
+
+$[a, b] = [0.1, 0.5]$, $c = 0.35$
+
+
+```{r}
+spar <- 0.35
+show_smspline_results(ts.ny.mobility, spar)
+```
+
+No se produce sobreajute, con lo que hacemos $b=c$.
+
+
+#### Paso 2
+
+$[a, b] = [0.1, 0.35]$, $c = 0.225$
+
+
+```{r}
+spar <- 0.225
+show_smspline_results(ts.ny.mobility, spar)
+```
+
+No se produce sobreajuste, por lo que tomamos $c=b$.
+
+
+#### Paso 3
+
+$[a, b] = [0.1, 0.225]$, $c = 0.1625$
+
+
+```{r}
+spar <- 0.1625
+show_smspline_results(ts.ny.mobility, spar)
+
+```
+
+No está totalmente claro de manera gráfica si existe sobreajuste, por lo que tomamos la solución del paso 2, que está bastante ajustada a la serie original.
+
+
+### Método band spectrum
+
+
+
+```{r}
+
+library(vars)
+
+#indice.1 <- gdf(indice)
+#ts.ny.mobility.1 <- gdf(ts.ny.mobility)
+#summary(lm(ts.ny.mobility.1~indice.1))
+
+
+indice=1:length(ts.ny.mobility)
+# Regresión en el dominio de la frecuencia filtrando las funciones elementales de mayor frecuencia
+bs.model=rdf(ts.ny.mobility,indice)
+plot(ts(ts.ny.mobility,frequency = 365, start = c(2002, 1)),type="l",main="IPI.Cantabria",ylab="")
+lines(ts(bs.model$datos$F,frequency = 365, start = c(2002, 1)),type="l",col=2)
+legend("bottomleft", c("Original", "Regresión Band Spectrum"),
+lwd=c(1,2,2), col=c("black", "red"))
+grid()
+
+## Cálcuo de sse
+sse <- sum((bs.model$datos$F - ts.ny.mobility)^2)
+sse
+## Cálcuo de ecm
+ecm <- sse / length(ts.ny.mobility)
+ecm
+```
+
+Parece que el método está realizando una regresión adaptada a la nube de puntos por lo que, siguiendo la documentación, es probable que no se haya pasado el test de Durbin para realizar un bien filtrado.
+
+## Análisis de los resultados y diferencias metodológicas
+
+En vista a las métricas de evaluación, se tiene:
+
+    - Los métodos kernel smooht y smooth spline obtienen una solución similar en cuanto a bondad del ajuste
+    - El método band spectrum presenta unn mal ajuste a la serie
+    
+EL método de suavizado mediante medias móviles para un punto t y longitud n presenta una media centrada en dicho punto usando los n puntos vecinos más proximos, tanto mayores como menores. Se trata de una forma de eliminar la variabilidad a lo largo de la tendencia y sirve de poco para realizar predicciones, salvo en casos muy triviales. 
+
+Smooth kernel es un método de interpolación local de la función de densidad que usa una banda o ventana como parámetro fundamental para realizar el ajuste alrededor de los puntos de entrenamiento, estableciendo un peso a cada valor $X_i$.
+
+El método smooth spline es un método de interpolación, que añade al método spline una penalización al término de error para evitar el sobreajuste. Por tanto, mientras que en el método de spline se busca la mejor de elección de la partición del dominio y la elección del grado de los splines, con smooth spline se suele trabajar con una familia fija de polinomios y nodos (orden 3 típicamente) y buscamos el mejor valor de $\lambda$ que mejor ajuste los datos.
+
+
+La regresión band spectrum sigue un enfoque distinto a los anteriores. Suponiendo que una función pueda expresarse como una serie de Fourier, la idea del método es filtrar aquéllas funciones elementales (senos y cosenos) que tienen un peso muy pequeño. Así, seleccionando las series de mayor peso, conservamos la mayor parte de la varianza de la serie, eliminando la parte residual relativa a las funciones elementades con alta frecuencia y poca variabilidad. En este sentido, el método band spectrum realiza una transformación del ámbito del tiempo al ámbito de la frecuencia con la matriz de Harvey, en donse se filtran las altas frecuencias, conservando sólo aquéllas funciones elementales importantes. Una vez realizado el filtrado, se vuelve a transformar la serie al ámbito del tiempo.
+
+# Segunda parte
+
+## Subapartado 1
+
+```{r}
+# Lecturas de los datos desde fichero
+emp.Cantabria <- read.csv("41743095-indust_T1995.csv")
+# Creación de la serie temporal
+ts.emp.Cantabria <- ts(emp.Cantabria, frequency = 4, start = c(1995, 1))
+# Listado de los datos
+ts.emp.Cantabria
+# Grafico de la serie temporal
+plot(ts.emp.Cantabria, main='EPA Cantabria', xlab='Cuatrimestre', ylab='Tasa', col = "blue")
+# Suavizado de la serie para ver la tendencia de la serie
+lines(rollmean(ts.emp.Cantabria, 3), col="red", lwd=2)
+legend("bottomleft", c("Original", "Media móvil centrada"),
+   lwd=c(1,2,2), col=c("black", "red"))
+grid()
+```
+
+La serie presenta una tendencia de tramos crecientes y decrecientes, reflejando posiblemente las distintas crisis económicas que han afectado al paro a lo largo de la serie histórica. Alrededor de la tendencia, se pueden distinguir ciclos que reflejan un claro componente estacional ligado a la actividad económica a lo largo de toda la serie histórica.
+
+
+## Subapartado 2
+
+Usamos el modelo Tramo-Seat con la opción RSAfull. Como se indica en la documentación, las operaciones para la opción RSAFULL son:
+
+   - Transformación logarítmica de la serie (si procede)
+   - Detección de valores extremos
+   - Efectos de calendario (como festivos, por ejemplo)
+   - Estimación de un modelo ARIMA
+
+```{r}
+model.tramo.spec <- tramoseats_spec("RSAfull")
+model.tramo <- tramoseats(ts.emp.Cantabria, model.tramo.spec)
+print(model.tramo)
+```
+
+El modelo que sigue tramo-Seats es el siguiente:
+
+$z_t = y_t*\beta + x_t$ en donde $z_t$ es la serie original, $y_t$ es un vector de $n$ variables y modeliza el efecto de los valores atípicos, efectos de calendario (días, como los festivos, que por su naturaleza pueden afectar el comportamineto puntualmente de la variable respuesta), efecto del año bisiesto y variables definidas por el usuario. Por tanto, esta parte del modelo determina el peso que pueden tener determinados efectos puntuales en la serie. Por otro lado, $x_t$ sigue un modelo arima de la forma $\phi(B)\delta(B)x_t = \theta(B)a_t$ en donde $a_t$ es un ruido blanco Gaussiano, $\theta(B)$ el el polinomio de la parte de medias móviles del modelo ARIMA, $\delta(B)$ es la parte autorregresiva del modelo, incluyendo la parte de diferenciación y $\phi(B)$ es la parte estacional del modelo. Por tanto, el modelo descompone la serie en tres partes:
+
+  - La tendencia
+  - La parte estacional
+  - La parte irregular (modelizado en el error Gaussiano)
+  
+Los coeficientes de los polinomios pueden verse en la parte 'Decomposition' de los resultados arrojados por el modelo. El polinomio SA indica la modelización de la parte estacional, con lo que claramente Tramo-Seats está detectando un componente estacional en la serie. Además, el test de Kruskall-Wallis con un p-valor mayor que 0.05, no rechaza la hipótesis nula de no estabilidad, con lo que el componente estacional no es estable.
+
+Además, realiza un prepocesado de los datos para tratar los valores faltantes y realizar, si es necesario, una transformación logarítmica de la serie, como he hecho se efectua en este caso.
+
+Aunque no se pide en el ejercicio, también es interesante mostrar el error, que valida el modelo ya que éste sigue un ruido blanco Gaussiano y, según muestran los correlogramas, parece que el modelo recoge todo los efectos no aleatorios.
+
+```{r}
+plot(model.tramo$regarima)
+```
+
+
+## Subapartado 3
+
+Descomposición de la serie mediante el método descompose.
+
+```{r}
+# descomposoción de la serie en sus componentes tendencia, estacional y aleatorio
+emp.can.decom <- decompose(ts.emp.Cantabria)
+# Se muestran los componentes de la serie
+plot(emp.can.decom)
+# Componente tendencia de la serie
+cant.emp.tend <- emp.can.decom$trend
+cant.emp.tend
+```
+
+
+
+Según se indica en la documentación, el método determina la tendencia mediante el método de medias móviles que, a juzgar por la salida de la componente tendencia, se ha hecho usando $n=2$. La componente estacional se hace promediando cada punto sobre todos los periodos y, finalmente, el componente aleatorio se obtiene restando a la serie original su tendencia y la parte estacional, que en este caso presenta un ciclo anual.
+
+
+## Subapartado 4
+
+Estudiamos las transformaciones a realizar para obtener una serie estacionaria.
+
+```{r}
+# Filtrado de NAs
+ts.cant.emp.tend <-  ts(cant.emp.tend[!is.na(cant.emp.tend), ], frequency = 4, start = c(1995, 3))
+# Transformación logarítmica para normalizar la varianza de la serie
+plot(log(ts.cant.emp.tend))
+```
+
+La transformación logarítmica sólo cambia el rango de la serie, pero se mantiene su forma. Aplicamos la operación de diferenciación.
+
+
+```{r}
+x1 <- diff(ts.cant.emp.tend)
+# Diferenciación de la serie para obtener una estacionaria
+plot(x1)
+Acf(x1)
+Pacf(x1)
+```
+
+
+La función de correlación parcial indica la presencia de una componente cíclica en la serie de frecuencia 4 (como ya sabemos). Como hemos visto en el apartado anterior, la serie presenta un caracter cíclico anual, sin embargo no vamos a diferenciar de nuevo la serie ya que, por construcción, hemos eliminado la variabilidad asociada a la componente estacional (al quedarnos sólo con la tendencia) y corremos el riesgo de sobrediferenciar la serie.
+
+
+En base a los correlogramas vamos a proponer 3 vectores de parámetros tanto para la parte no estacional como estacional:
+
+  - No estacional $(p,d, q) = {(2,1,0), (1,1,0), (0,1,2)}$
+  - Estacional $(P,D, Q) = {(0,0,2), (1,0,1), (1,0,0)}$
+  
+Por tanto, tenemos nuevo posibilidades a evaluar.
+
+```{r}
+# ts: serie temporal
+# order: parámetros de la parte no estacional del modelo ARIMA
+# seasonal: parámetros de la parte estacional del modelo SARIMA
+show_ARIMA_results <- function(ts, order, seasonal) {
+    print("#########################################")
+    print(paste("Salida para parámetros (p, d, q), (P, D, Q): ", "( ", paste(order, collapse = " ")," ), ",  "( ", paste(seasonal, collapse = " "), ") "))
+    print("#########################################")
+    arima.model <- arima(ts,order, seasonal, include.mean = FALSE)
+    print(arima.model)
+    print(jarque.bera.test(arima.model$residuals))
+    plot(arima.model)
+    plot(arima.model$residuals)
+    hist(arima.model$residuals)
+    Acf(arima.model$residuals)
+    Pacf(arima.model$residuals)
+    qqnorm(arima.model$residuals, pch = 19, col = "red")
+    qqline(arima.model$residuals)
+    cpgram(arima.model$residuals)
+    gtd(arima.model$residuals)
+}
+
+
+ts <- ts.cant.emp.tend
+v.order <- list(c(1,1,1), c(2,1,0), c(1,1,0), c(0,1,2))
+v.seasonal <- list(c(0,0,2), c(1,0,1), c(1,0,0))
+
+
+for(p_order in v.order)  {
+  for(p_seasonal in v.seasonal) {
+    show_ARIMA_results(ts, p_order, p_seasonal)   
+  }
+}
+```
+
+De todos los modelos probados sólo uno cumple las condiciones:
+  
+  
+   - El estadíctico t nos da un valor significativo para todos los parámetros del modelo
+   - Las inversas de las raíces del polinomio de retardos están dentro del círculo unidad, por lo que se cumplen las condiciones de estacionariedad e invertibilidad
+   - Los residuos siguen un ruido blanco Gaussiano y los correlogramas de correlacion y autocorrelación parcial indican que se ha recogido todos los efectos no aleatorios del modelo
+   
+
+Los modelos $(p, d, q, P, D, Q) = {(2, 1, 0, 0, 0, 2), (2, 1, 0, 1, 0, 1)}$ cumplen todas las condiciones anteriores, salvo que tienen coeficientes con un valor del estadístico muy bajo, lo que indica que los parámetros no son relevantes, aunque consiguen un ruido blanco y están cerca de ser un modelo válido. 
+
+El modelo que cumple todas las condiciones es  $(p, d, q, P, D, Q) = {(2, 1, 0, 1, 0, 0)}$ con un AIC de 48.26 y es el que usaremos para hacer las predicciones.
+   
+```{r}
+# Parámetros para el mejor modelo seleccionado
+order <- c(2,1,0)
+seasonal <- c(1,0,0)
+# Estimación del modelo
+selected.ARIMA <- arima(ts.cant.emp.tend,order, seasonal, include.mean = FALSE)
+#  Predcciones
+prediccion=predict(selected.ARIMA,n.ahead = 4)
+prediccion
+# Graficamos la predicción
+ts.plot(ts.cant.emp.tend, prediccion$pred, lty = c(1,3), col=c(5,2))
+```   
+
+Estimamos el modelo auto.arima.
+
+```{r}
+auto.arima.model <- auto.arima(ts.cant.emp.tend)
+# Coeficientes y test de significación (estadístico t)
+auto.arima.model
+# Estudio de la estacionalidad e invertibilidad del modelo
+plot(auto.arima.model)
+# Estudio de los residuos
+jarque.bera.test(auto.arima.model$residuals)
+# Gráfico de los residuos
+plot(auto.arima.model$residuals)
+# Gráfico de autocorrelación y autocorrelación parcial
+Acf(auto.arima.model$residuals)
+Pacf(auto.arima.model$residuals)
+# Estudio gráfico de la normalidad de los residuos
+qqnorm(auto.arima.model$residuals, pch = 19, col = "red")
+qqline(auto.arima.model$residuals)
+cpgram(auto.arima.model$residuals)
+gtd(auto.arima.model$residuals)
+```   
+
+El modelo es perfectamente coherente:
+
+   - Todos los coeficientes son significativos ($t_{ar1} = 1.4641/0.0864 = 16.9$, $t_{ar2} = 0.5973/0.0845 = 7.06$, $t_{sar1} = 0.6468/0.0829 = 7.8$)
+   - Las inversas de las raíces quedan dentro de la circunferencia unidad, por lo que se satisfacen las propiedades de estacionariedad e invertibilidad
+    - El error sigue una distribución Gaussiana de ruido blanco. Además, el ACP y PACF, junto con el test sobre el espectro, indican que se han recogido todos los efectos no aleatorios en el modelo.
+    
+    
+Es este caso, han coincidido el método elaborado manualmente y el automático.
